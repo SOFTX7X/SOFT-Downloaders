@@ -66,7 +66,16 @@ form.addEventListener('submit', async (event) => {
   preview.replaceChildren();
   const element = document.createElement(data.type === 'image' ? 'img' : data.type === 'video' ? 'video' : 'audio');
   element.src = data.url;
-  if (data.type === 'video') element.controls = true;
+  if (data.type === 'video') {
+    element.autoplay = true;
+    element.muted = true;
+    element.loop = true;
+    element.playsInline = true;
+    element.controls = false;
+    element.disablePictureInPicture = true;
+    element.setAttribute('controlsList', 'nodownload nofullscreen noremoteplayback');
+    element.setAttribute('aria-label', 'Prévia automática do vídeo');
+  }
   if (data.type === 'audio') element.controls = true;
   element.addEventListener('error', () => showError('Não foi possível carregar esta mídia. Confirme se o link é público e direto.'));
   preview.append(element);
