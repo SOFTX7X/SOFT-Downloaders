@@ -7,6 +7,8 @@ from yt_dlp import YoutubeDL
 ALLOWED_HOSTS = (
     "instagram.com", "tiktok.com", "youtube.com", "youtu.be", "facebook.com", "fb.watch",
 )
+IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif", "avif"}
+AUDIO_EXTENSIONS = {"mp3", "m4a", "wav", "ogg", "opus", "aac"}
 
 
 class handler(BaseHTTPRequestHandler):
@@ -34,22 +36,27 @@ class handler(BaseHTTPRequestHandler):
             if not info:
                 return self.respond(422, {"error": "Não foi possível encontrar mídia pública nesse link."})
             if info.get("entries"):
-                info = next((entry for entry in info["entries"] if entry), None)
+                entries = [entry for entry in info["entries"] if entry and entry.get("url")]
+                info = entries[0] if entries else None
+                media_count = len(entries)
+            else:
+                media_count = 1
             if not info or not info.get("url"):
                 return self.respond(422, {"error": "Não foi possível obter uma mídia baixável desse link."})
 
             media_url = info["url"]
-            extension = info.get("ext", "mp4")
+            extension = str(info.get("ext", "mp4")).lower()
             thumbnail = info.get("thumbnail")
             title = info.get("title") or "Mídia pronta para baixar"
             self.respond(200, {
                 "status": "ready",
                 "source": detect_source(host),
-                "type": "audio" if info.get("vcodec") == "none" else "video",
+                "type": media_type(info, extension),
                 "url": media_url,
                 "title": title,
                 "thumbnail": thumbnail,
                 "filename": f"{safe_filename(title)}.{extension}",
+                "media_count": media_count,
             })
         except Exception:
             self.respond(422, {"error": "Não foi possível ler este link agora. Confirme se a publicação é pública e tente novamente."})
@@ -75,6 +82,14 @@ def detect_source(host):
     if "youtube" in host or host == "youtu.be":
         return "youtube"
     return "facebook"
+
+
+def media_type(info, extension):
+    if extension in IMAGE_EXTENSIONS:
+        return "image"
+    if extension in AUDIO_EXTENSIONS or info.get("vcodec") == "none":
+        return "audio"
+    return "video"
 
 
 def safe_filename(value):
