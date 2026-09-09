@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="SOFT Downloaders: organize e baixe mídias que você tem autorização para usar." />
+    <title>SOFT Downloaders — mídia por link</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#inicio" aria-label="SOFT Downloaders, início"><span>SOFT</span> Downloaders</a>
+      <nav aria-label="Navegação principal">
+        <a href="#como-funciona">Como funciona</a>
+        <a href="#formatos">Formatos</a>
+        <a href="#perguntas">Ajuda</a>
+      </nav>
+    </header>
+
+    <main id="inicio">
+      <section class="hero" aria-labelledby="page-title">
+        <p class="eyebrow">MÍDIA POR LINK</p>
+        <h1 id="page-title">Baixe mídias que<br />são suas.</h1>
+        <p class="hero-copy">Cole um link direto de vídeo, áudio ou imagem para analisar e baixar o arquivo original.</p>
+
+        <div class="media-types" aria-label="Tipos aceitos">
+          <span>Vídeo</span><span>Imagem</span><span>Áudio</span><span>Link direto</span>
+        </div>
+
+        <form class="download-form" id="downloadForm" novalidate>
+          <label class="sr-only" for="mediaUrl">Cole o link da mídia</label>
+          <input id="mediaUrl" name="mediaUrl" type="url" inputmode="url" autocomplete="url" placeholder="Cole aqui o link da mídia" required />
+          <button type="button" class="paste-button" id="pasteButton">Colar</button>
+          <button type="submit" class="download-button">Analisar</button>
+        </form>
+        <p class="form-note" id="formNote">Aceita links diretos para arquivos públicos: MP4, WebM, MP3, JPG, PNG e WebP.</p>
+
+        <section class="result" id="result" aria-live="polite" hidden>
+          <div class="result-preview" id="resultPreview"></div>
+          <div class="result-info">
+            <p class="eyebrow" id="resultType">ARQUIVO ENCONTRADO</p>
+            <h2 id="resultTitle">Mídia pronta para baixar</h2>
+            <p id="resultDescription">A prévia foi carregada a partir do link informado.</p>
+            <a class="download-link" id="downloadLink" href="#" download>Baixar arquivo</a>
+          </div>
+        </section>
+      </section>
+
+      <section class="steps" id="como-funciona" aria-labelledby="steps-title">
+        <p class="eyebrow">SIMPLES E DIRETO</p>
+        <h2 id="steps-title">Como funciona</h2>
+        <ol>
+          <li><strong>01</strong><span>Cole um link direto para um arquivo de mídia.</span></li>
+          <li><strong>02</strong><span>Confira a prévia antes de salvar.</span></li>
+          <li><strong>03</strong><span>Baixe o arquivo no seu dispositivo.</span></li>
+        </ol>
+      </section>
+
+      <section class="formats" id="formatos" aria-labelledby="formats-title">
+        <p class="eyebrow">FORMATOS</p>
+        <h2 id="formats-title">Feito para arquivos públicos.</h2>
+        <p>Funciona com URLs diretas. Para redes sociais, a integração será feita somente por conexão autorizada da conta.</p>
+      </section>
+
+      <section class="faq" id="perguntas" aria-labelledby="faq-title">
+        <p class="eyebrow">AJUDA</p>
+        <h2 id="faq-title">Perguntas frequentes</h2>
+        <details><summary>Posso baixar qualquer vídeo de rede social?</summary><p>Não. O SOFT Downloaders será voltado a arquivos públicos diretos e conteúdo de contas conectadas e autorizadas.</p></details>
+        <details><summary>Preciso criar uma conta?</summary><p>Não para usar links diretos. Conexões com plataformas serão opcionais e exigirão autorização da própria conta.</p></details>
+      </section>
+    </main>
+
+    <footer>© <span id="year"></span> SOFT Downloaders. Use apenas conteúdo que você possui ou tem autorização para usar.</footer>
+    <script src="app.js"></script>
+  </body>
+</html>
