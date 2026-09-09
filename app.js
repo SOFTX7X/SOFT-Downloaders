@@ -23,6 +23,15 @@ form.addEventListener('submit', async (event) => {
     data = await response.json();
     if (!response.ok) throw new Error(data.error || 'Não foi possível analisar o link.');
   } catch (error) { return showError(error.message || 'Não foi possível analisar o link.'); }
+  if (data.status === 'pending') {
+    note.className = 'form-note';
+    note.textContent = `Lendo publicação do ${data.source}…`;
+    try {
+      const extraction = await fetch('/api/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: rawUrl }) });
+      data = await extraction.json();
+      if (!extraction.ok) throw new Error(data.error || 'Não foi possível extrair a mídia.');
+    } catch (error) { return showError(error.message || 'Não foi possível extrair a mídia.'); }
+  }
   if (data.status !== 'ready') return showError(data.message || 'Este link ainda não é compatível.');
 
   preview.replaceChildren();
@@ -33,8 +42,9 @@ form.addEventListener('submit', async (event) => {
   element.addEventListener('error', () => showError('Não foi possível carregar esta mídia. Confirme se o link é público e direto.'));
   preview.append(element);
   downloadLink.href = data.url;
-  downloadLink.download = '';
+  downloadLink.download = data.filename || '';
   document.querySelector('#resultType').textContent = data.type === 'image' ? 'IMAGEM ENCONTRADA' : data.type === 'video' ? 'VÍDEO ENCONTRADO' : 'ÁUDIO ENCONTRADO';
+  document.querySelector('#resultTitle').textContent = data.title || 'Mídia pronta para baixar';
   document.querySelector('#resultDescription').textContent = 'A prévia foi carregada a partir do link informado. Confira antes de salvar.';
   note.className = 'form-note success';
   note.textContent = 'Link analisado. A prévia está pronta abaixo.';
