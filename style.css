@@ -3,7 +3,7 @@
 html { scroll-behavior:smooth; }
 body { margin:0; color:var(--ink); background:#fff; font-family:"DM Sans",sans-serif; }
 .site-header { max-width:1180px; min-height:78px; padding:0 28px; margin:auto; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line); }
-.brand { color:var(--ink); font:800 21px/1 "Manrope",sans-serif; text-decoration:none; letter-spacing:-.8px; }.brand span{color:var(--violet)}
+.brand { color:var(--ink); display:flex; align-items:center; gap:8px; font:800 21px/1 "Manrope",sans-serif; text-decoration:none; letter-spacing:-.8px; }.brand img{width:29px;height:29px;object-fit:contain}.brand span{color:var(--violet)}
 nav { display:flex; gap:28px; } nav a { color:var(--muted); text-decoration:none; font-size:14px; font-weight:600; } nav a:hover{color:var(--ink)}
 .hero { max-width:920px; padding:110px 28px 96px; margin:auto; text-align:center; }.eyebrow { margin:0 0 14px; color:var(--violet); font-size:12px; font-weight:800; letter-spacing:1.1px; }
 h1,h2 { margin:0; font-family:"Manrope",sans-serif; letter-spacing:-2.2px; } h1 { font-size:clamp(42px,7vw,76px); line-height:1.02; } h2{font-size:clamp(27px,4vw,42px);line-height:1.08}.hero-copy { max-width:565px; margin:22px auto 27px; color:var(--muted); font-size:17px; line-height:1.6; }
