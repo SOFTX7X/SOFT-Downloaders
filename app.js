@@ -11,6 +11,35 @@ document.querySelector('#pasteButton').addEventListener('click', async () => {
   try { input.value = await navigator.clipboard.readText(); input.focus(); } catch { input.focus(); }
 });
 
+downloadLink.addEventListener('click', async (event) => {
+  const mediaUrl = downloadLink.dataset.mediaUrl;
+  if (!mediaUrl) return;
+  event.preventDefault();
+  const originalLabel = downloadLink.textContent;
+  downloadLink.textContent = 'Preparando arquivo…';
+  downloadLink.setAttribute('aria-busy', 'true');
+  try {
+    const response = await fetch(mediaUrl);
+    if (!response.ok) throw new Error('Arquivo indisponível. Analise o link novamente.');
+    const file = await response.blob();
+    const objectUrl = URL.createObjectURL(file);
+    const trigger = document.createElement('a');
+    trigger.href = objectUrl;
+    trigger.download = downloadLink.dataset.filename || 'soft-download';
+    document.body.append(trigger);
+    trigger.click();
+    trigger.remove();
+    URL.revokeObjectURL(objectUrl);
+    note.className = 'form-note success';
+    note.textContent = 'Download iniciado.';
+  } catch (error) {
+    showError(error.message || 'Não foi possível preparar o arquivo para download.');
+  } finally {
+    downloadLink.textContent = originalLabel;
+    downloadLink.removeAttribute('aria-busy');
+  }
+});
+
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   const rawUrl = input.value.trim();
@@ -41,8 +70,9 @@ form.addEventListener('submit', async (event) => {
   if (data.type === 'audio') element.controls = true;
   element.addEventListener('error', () => showError('Não foi possível carregar esta mídia. Confirme se o link é público e direto.'));
   preview.append(element);
-  downloadLink.href = data.url;
-  downloadLink.download = data.filename || '';
+  downloadLink.href = '#';
+  downloadLink.dataset.mediaUrl = data.url;
+  downloadLink.dataset.filename = data.filename || 'soft-download';
   document.querySelector('#resultType').textContent = data.type === 'image' ? 'IMAGEM ENCONTRADA' : data.type === 'video' ? 'VÍDEO ENCONTRADO' : 'ÁUDIO ENCONTRADO';
   document.querySelector('#resultTitle').textContent = data.title || 'Mídia pronta para baixar';
   document.querySelector('#resultDescription').textContent = 'A prévia foi carregada a partir do link informado. Confira antes de salvar.';
