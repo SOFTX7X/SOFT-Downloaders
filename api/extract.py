@@ -1,6 +1,8 @@
 import json
+import re
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from yt_dlp import YoutubeDL
 
@@ -30,34 +32,20 @@ class handler(BaseHTTPRequestHandler):
                 "socket_timeout": 20,
                 "http_headers": {"User-Agent": "Mozilla/5.0"},
             }
-            with YoutubeDL(options) as extractor:
-                info = extractor.extract_info(source_url, download=False)
+            try:
+                with YoutubeDL(options) as extractor:
+                    info = extractor.extract_info(source_url, download=False)
+                media = normalize_media(info, host)
+            except Exception:
+                media = None
 
-            if not info:
-                return self.respond(422, {"error": "Não foi possível encontrar mídia pública nesse link."})
-            if info.get("entries"):
-                entries = [entry for entry in info["entries"] if entry and entry.get("url")]
-                info = entries[0] if entries else None
-                media_count = len(entries)
-            else:
-                media_count = 1
-            if not info or not info.get("url"):
-                return self.respond(422, {"error": "Não foi possível obter uma mídia baixável desse link."})
-
-            media_url = info["url"]
-            extension = str(info.get("ext", "mp4")).lower()
-            thumbnail = info.get("thumbnail")
-            title = info.get("title") or "Mídia pronta para baixar"
-            self.respond(200, {
-                "status": "ready",
-                "source": detect_source(host),
-                "type": media_type(info, extension),
-                "url": media_url,
-                "title": title,
-                "thumbnail": thumbnail,
-                "filename": f"{safe_filename(title)}.{extension}",
-                "media_count": media_count,
-            })
+            # Instagram altera com frequência o endpoint usado por extratores.
+            # Quando isso ocorre, tentamos a página de incorporação pública como segunda fonte.
+            if not media and "instagram" in host:
+                media = extract_instagram_embed(source_url)
+            if not media:
+                return self.respond(422, {"error": "Não foi possível ler este link agora. Confirme se a publicação é pública e tente novamente."})
+            self.respond(200, media)
         except Exception:
             self.respond(422, {"error": "Não foi possível ler este link agora. Confirme se a publicação é pública e tente novamente."})
 
@@ -90,6 +78,56 @@ def media_type(info, extension):
     if extension in AUDIO_EXTENSIONS or info.get("vcodec") == "none":
         return "audio"
     return "video"
+
+
+def normalize_media(info, host):
+    if not info:
+        return None
+    if info.get("entries"):
+        entries = [entry for entry in info["entries"] if entry and entry.get("url")]
+        info = entries[0] if entries else None
+        media_count = len(entries)
+    else:
+        media_count = 1
+    if not info or not info.get("url"):
+        return None
+    extension = str(info.get("ext", "mp4")).lower()
+    title = info.get("title") or "Mídia pronta para baixar"
+    return {
+        "status": "ready", "source": detect_source(host), "type": media_type(info, extension),
+        "url": info["url"], "title": title, "thumbnail": info.get("thumbnail"),
+        "filename": f"{safe_filename(title)}.{extension}", "media_count": media_count,
+    }
+
+
+def extract_instagram_embed(source_url):
+    parsed = urlparse(source_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2 or parts[0] not in ("p", "reel", "reels"):
+        return None
+    embed_url = f"https://www.instagram.com/{parts[0]}/{parts[1]}/embed/captioned/"
+    request = Request(embed_url, headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.8"})
+    with urlopen(request, timeout=20) as response:
+        page = response.read().decode("utf-8", "ignore")
+    video_url = extract_embedded_url(page, "video_url")
+    image_url = extract_embedded_url(page, "display_url")
+    media_url = video_url or image_url
+    if not media_url:
+        return None
+    kind = "video" if video_url else "image"
+    extension = "mp4" if kind == "video" else "jpg"
+    return {
+        "status": "ready", "source": "instagram", "type": kind, "url": media_url,
+        "title": "Mídia do Instagram", "thumbnail": image_url,
+        "filename": f"instagram-{parts[1]}.{extension}", "media_count": 1,
+    }
+
+
+def extract_embedded_url(page, field):
+    match = re.search(rf'{field}\\?"\s*:\\?"(https.*?)(?<!\\)\\?"', page)
+    if not match:
+        return None
+    return match.group(1).replace("\\u0026", "&").replace("\\/", "/").replace("\\", "")
 
 
 def safe_filename(value):
