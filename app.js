@@ -4,6 +4,7 @@ const note = document.querySelector('#formNote');
 const result = document.querySelector('#result');
 const preview = document.querySelector('#resultPreview');
 const downloadLink = document.querySelector('#downloadLink');
+const carouselItems = document.querySelector('#carouselItems');
 
 document.querySelector('#year').textContent = new Date().getFullYear();
 
@@ -63,6 +64,20 @@ form.addEventListener('submit', async (event) => {
   }
   if (data.status !== 'ready') return showError(data.message || 'Este link ainda não é compatível.');
 
+  const items = Array.isArray(data.items) && data.items.length ? data.items : [data];
+  renderMedia(items[0]);
+  renderCarousel(items);
+  document.querySelector('#resultTitle').textContent = data.title || 'Mídia pronta para baixar';
+  document.querySelector('#resultDescription').textContent = items.length > 1
+    ? `Carrossel com ${items.length} mídias. Selecione uma para pré-visualizar e baixar.`
+    : 'A prévia foi carregada a partir do link informado. Confira antes de salvar.';
+  note.className = 'form-note success';
+  note.textContent = items.length > 1 ? `${items.length} mídias encontradas no carrossel.` : 'Link analisado. A prévia está pronta abaixo.';
+  result.hidden = false;
+  result.scrollIntoView({ behavior:'smooth', block:'nearest' });
+});
+
+function renderMedia(data) {
   preview.replaceChildren();
   const element = document.createElement(data.type === 'image' ? 'img' : data.type === 'video' ? 'video' : 'audio');
   element.src = data.url;
@@ -83,12 +98,24 @@ form.addEventListener('submit', async (event) => {
   downloadLink.dataset.mediaUrl = data.url;
   downloadLink.dataset.filename = data.filename || 'soft-download';
   document.querySelector('#resultType').textContent = data.type === 'image' ? 'IMAGEM ENCONTRADA' : data.type === 'video' ? 'VÍDEO ENCONTRADO' : 'ÁUDIO ENCONTRADO';
-  document.querySelector('#resultTitle').textContent = data.title || 'Mídia pronta para baixar';
-  document.querySelector('#resultDescription').textContent = 'A prévia foi carregada a partir do link informado. Confira antes de salvar.';
-  note.className = 'form-note success';
-  note.textContent = 'Link analisado. A prévia está pronta abaixo.';
-  result.hidden = false;
-  result.scrollIntoView({ behavior:'smooth', block:'nearest' });
-});
+}
+
+function renderCarousel(items) {
+  carouselItems.replaceChildren();
+  if (items.length < 2) { carouselItems.hidden = true; return; }
+  carouselItems.hidden = false;
+  items.forEach((item, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `carousel-item${index === 0 ? ' active' : ''}`;
+    button.textContent = `${index + 1}. ${item.type === 'image' ? 'Imagem' : item.type === 'video' ? 'Vídeo' : 'Áudio'}`;
+    button.addEventListener('click', () => {
+      renderMedia(item);
+      carouselItems.querySelectorAll('.carousel-item').forEach((entry) => entry.classList.remove('active'));
+      button.classList.add('active');
+    });
+    carouselItems.append(button);
+  });
+}
 
 function showError(message) { note.className = 'form-note error'; note.textContent = message; result.hidden = true; }

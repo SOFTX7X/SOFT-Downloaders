@@ -37,29 +37,30 @@ def extract_media(source_url):
     ):
         return None, "Use um link público de Instagram, TikTok, YouTube ou Facebook."
 
-    # O Instagram não entrega fotos como "formato de vídeo" ao yt-dlp.
-    # Lemos a imagem pública do post antes de tentar a extração de vídeos.
-    if "instagram" in host and parsed.path.startswith("/p/"):
-        try:
-            image = extract_instagram_post_image(source_url)
-            if image:
-                return image, None
-        except Exception:
-            pass
-
     options = {
         "quiet": True,
         "no_warnings": True,
-        "noplaylist": True,
+        "noplaylist": False,
         "skip_download": True,
+        "ignoreerrors": True,
+        "ignore_no_formats_error": True,
         "socket_timeout": 25,
         "http_headers": {"User-Agent": "Mozilla/5.0"},
     }
     try:
         with YoutubeDL(options) as extractor:
-            media = normalize_media(extractor.extract_info(source_url, download=False), host)
+            info = extractor.extract_info(source_url, download=False)
+        media = normalize_carousel_media(info, host)
     except Exception:
         media = None
+
+    # Fallback para publicação de foto única, quando o Instagram não retorna
+    # os metadados completos do carrossel.
+    if not media and "instagram" in host and parsed.path.startswith("/p/"):
+        try:
+            media = extract_instagram_post_image(source_url)
+        except Exception:
+            media = None
 
     if not media and "instagram" in host:
         try:
@@ -70,6 +71,38 @@ def extract_media(source_url):
     if not media:
         return None, "Não foi possível ler este link agora. Confirme se a publicação é pública e tente novamente."
     return media, None
+
+
+def normalize_carousel_media(info, host):
+    if not info:
+        return None
+
+    raw_items = info.get("entries") if info.get("entries") else [info]
+    items = []
+    for index, entry in enumerate(raw_items, start=1):
+        if not entry:
+            continue
+        if entry.get("url"):
+            item = normalize_media(entry, host)
+        elif entry.get("thumbnail"):
+            item = {
+                "status": "ready", "source": "instagram", "type": "image",
+                "url": entry["thumbnail"], "thumbnail": entry["thumbnail"],
+                "title": entry.get("title") or f"Imagem {index}",
+                "filename": f"instagram-{entry.get('id') or index}.jpg", "media_count": 1,
+            }
+        else:
+            item = None
+        if item and item.get("url"):
+            items.append(item)
+
+    if not items:
+        return None
+    primary = dict(items[0])
+    primary["items"] = items
+    primary["media_count"] = len(items)
+    primary["title"] = info.get("title") or primary["title"]
+    return primary
 
 
 class WorkerHandler(BaseHTTPRequestHandler):
