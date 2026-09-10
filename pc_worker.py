@@ -33,6 +33,7 @@ from extract import (  # noqa: E402
     normalize_media,
 )
 from yt_dlp import YoutubeDL  # noqa: E402
+from yt_dlp.networking.impersonate import ImpersonateTarget  # noqa: E402
 
 
 PORT = 8787
@@ -161,10 +162,13 @@ def extract_media(source_url):
         "ignoreerrors": True,
         "ignore_no_formats_error": True,
         "socket_timeout": 25,
-        "http_headers": {"User-Agent": "Mozilla/5.0"},
     }
     if "tiktok" in host and curl_requests is not None:
-        options["impersonate"] = "chrome"
+        # A API Python do yt-dlp espera um ImpersonateTarget já convertido.
+        # A CLI faz essa conversão automaticamente para --impersonate chrome.
+        options["impersonate"] = ImpersonateTarget.from_str("chrome")
+    else:
+        options["http_headers"] = {"User-Agent": "Mozilla/5.0"}
     try:
         with YoutubeDL(options) as extractor:
             info = extractor.extract_info(source_url, download=False)
