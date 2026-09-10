@@ -10,7 +10,8 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "api"))
@@ -25,8 +26,12 @@ from yt_dlp import YoutubeDL  # noqa: E402
 
 
 PORT = 8787
-ALLOWED_ORIGINS = {"https://softdownloaders.vercel.app"}
+ALLOWED_ORIGINS = {"https://softdownloaders.vercel.app", "https://softdownloader.site"}
 WORKER_SECRET = os.environ.get("SOFT_WORKER_SECRET", "")
+MEDIA_HOSTS = (
+    "fbcdn.net", "cdninstagram.com", "tiktok.com", "tiktokcdn.com",
+    "byteoversea.com", "googlevideo.com", "ytimg.com",
+)
 
 
 def extract_media(source_url):
@@ -112,6 +117,8 @@ class WorkerHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             return self.respond(200, {"status": "online", "service": "SOFT Downloaders worker"})
+        if self.path.startswith("/media?"):
+            return self.proxy_media()
         return self.respond(404, {"error": "Rota não encontrada."})
 
     def do_POST(self):
@@ -144,6 +151,31 @@ class WorkerHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(json.dumps(payload).encode("utf-8"))
+
+    def proxy_media(self):
+        source_url = parse_qs(urlparse(self.path).query).get("url", [""])[0]
+        parsed = urlparse(source_url)
+        host = parsed.hostname.lower() if parsed.hostname else ""
+        if parsed.scheme != "https" or not any(host == item or host.endswith("." + item) for item in MEDIA_HOSTS):
+            return self.respond(400, {"error": "Arquivo de mídia não permitido."})
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.instagram.com/"}
+        if self.headers.get("Range"):
+            headers["Range"] = self.headers["Range"]
+        try:
+            with urlopen(Request(source_url, headers=headers), timeout=45) as upstream:
+                self.send_response(getattr(upstream, "status", 200))
+                origin = self.headers.get("Origin")
+                if origin in ALLOWED_ORIGINS:
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                for name in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+                    if upstream.headers.get(name):
+                        self.send_header(name, upstream.headers[name])
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                while chunk := upstream.read(64 * 1024):
+                    self.wfile.write(chunk)
+        except Exception:
+            self.respond(502, {"error": "Não foi possível preparar este arquivo."})
 
     def log_message(self, *_):
         pass

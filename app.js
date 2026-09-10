@@ -5,7 +5,6 @@ const result = document.querySelector('#result');
 const preview = document.querySelector('#resultPreview');
 const downloadLink = document.querySelector('#downloadLink');
 const carouselItems = document.querySelector('#carouselItems');
-const downloadAll = document.querySelector('#downloadAll');
 
 document.querySelector('#year').textContent = new Date().getFullYear();
 document.querySelector('#pasteButton').addEventListener('click', async () => {
@@ -15,17 +14,6 @@ document.querySelector('#pasteButton').addEventListener('click', async () => {
 downloadLink.addEventListener('click', async (event) => {
   event.preventDefault();
   if (downloadLink.dataset.mediaUrl) await downloadMedia(downloadLink.dataset.mediaUrl, downloadLink.dataset.filename, downloadLink);
-});
-downloadAll.addEventListener('click', async () => {
-  const items = downloadAll._items || [];
-  if (!items.length) return;
-  downloadAll.disabled = true;
-  downloadAll.textContent = 'Preparando downloads…';
-  try {
-    for (const item of items) await downloadMedia(item.url, item.filename || 'soft-download', null, true);
-    note.className = 'form-note success'; note.textContent = 'Downloads iniciados.';
-  } catch (error) { showError(error.message || 'Não foi possível preparar os downloads.'); }
-  finally { downloadAll.disabled = false; downloadAll.textContent = 'Baixar todos'; }
 });
 
 form.addEventListener('submit', async (event) => {
@@ -54,12 +42,10 @@ form.addEventListener('submit', async (event) => {
   result.classList.toggle('is-carousel', isCarousel);
   if (isCarousel) renderCarousel(items); else renderMedia(items[0]);
   downloadLink.hidden = isCarousel;
-  downloadAll.hidden = !isCarousel;
-  downloadAll._items = isCarousel ? items : [];
   document.querySelector('#resultType').textContent = isCarousel ? 'CARROSSEL ENCONTRADO' : data.type === 'image' ? 'IMAGEM ENCONTRADA' : data.type === 'video' ? 'VÍDEO ENCONTRADO' : 'ÁUDIO ENCONTRADO';
   document.querySelector('#resultTitle').textContent = data.title || 'Mídia pronta para baixar';
   document.querySelector('#resultDescription').textContent = isCarousel
-    ? `${items.length} mídias encontradas. Baixe uma pelo ícone ou todas de uma vez.`
+    ? `${items.length} mídias encontradas. Use o ícone em cada arquivo para baixar.`
     : 'A prévia foi carregada a partir do link informado. Confira antes de salvar.';
   note.className = 'form-note success'; note.textContent = isCarousel ? `${items.length} mídias encontradas no carrossel.` : 'Link analisado. A prévia está pronta abaixo.';
   result.hidden = false;
@@ -68,7 +54,7 @@ form.addEventListener('submit', async (event) => {
 
 function createPreview(data) {
   const element = document.createElement(data.type === 'image' ? 'img' : data.type === 'video' ? 'video' : 'audio');
-  element.src = data.url;
+  element.src = proxyMediaUrl(data.url, data.source);
   if (data.type === 'video') {
     element.autoplay = true; element.muted = true; element.loop = true; element.playsInline = true;
     element.controls = false; element.disablePictureInPicture = true;
@@ -82,7 +68,7 @@ function createPreview(data) {
 function renderMedia(data) {
   preview.replaceChildren(createPreview(data));
   carouselItems.hidden = true; carouselItems.replaceChildren();
-  downloadLink.href = '#'; downloadLink.dataset.mediaUrl = data.url;
+  downloadLink.href = '#'; downloadLink.dataset.mediaUrl = proxyMediaUrl(data.url, data.source);
   downloadLink.dataset.filename = data.filename || 'soft-download';
 }
 
@@ -96,7 +82,7 @@ function renderCarousel(items) {
     const button = document.createElement('button');
     button.type = 'button'; button.className = 'tile-download'; button.textContent = '↓';
     button.title = `Baixar mídia ${index + 1}`; button.setAttribute('aria-label', `Baixar mídia ${index + 1}`);
-    button.addEventListener('click', () => downloadMedia(item.url, item.filename || 'soft-download', button));
+    button.addEventListener('click', () => downloadMedia(proxyMediaUrl(item.url, item.source), item.filename || 'soft-download', button));
     tile.append(button); grid.append(tile);
   });
   preview.append(grid);
@@ -119,3 +105,7 @@ async function downloadMedia(mediaUrl, filename, button, quiet = false) {
 }
 
 function showError(message) { note.className = 'form-note error'; note.textContent = message; result.hidden = true; }
+
+function proxyMediaUrl(url, source) {
+  return source && source !== 'direct' ? `https://api.forgeaioficial.online/media?url=${encodeURIComponent(url)}` : url;
+}
