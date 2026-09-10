@@ -39,18 +39,6 @@
         </form>
         <p class="form-note" id="formNote">Aceita links diretos para arquivos públicos: MP4, WebM, MP3, JPG, PNG e WebP.</p>
 
-        <section class="result" id="result" aria-live="polite" hidden>
-          <div class="result-media">
-            <div class="result-preview" id="resultPreview"></div>
-            <div class="carousel-items" id="carouselItems" hidden></div>
-          </div>
-          <div class="result-info">
-            <p class="eyebrow" id="resultType">ARQUIVO ENCONTRADO</p>
-            <h2 id="resultTitle">Mídia pronta para baixar</h2>
-            <p id="resultDescription">A prévia foi carregada a partir do link informado.</p>
-            <a class="download-link" id="downloadLink" href="#" download>Baixar arquivo</a>
-          </div>
-        </section>
       </section>
 
       <section class="steps" id="como-funciona" aria-labelledby="steps-title">
@@ -76,6 +64,40 @@
         <details><summary>Preciso criar uma conta?</summary><p>Não para usar links diretos. Conexões com plataformas serão opcionais e exigirão autorização da própria conta.</p></details>
       </section>
     </main>
+
+
+    <section class="result-screen" id="resultScreen" aria-live="polite" hidden>
+      <div class="result-shell">
+        <header class="result-screen-header">
+          <button class="result-back" id="resultBack" type="button" aria-label="Voltar para a página inicial">← Voltar</button>
+          <div class="result-brand" aria-hidden="true"><img src="assets/soft-downloaders-logo.png" alt="" /><span>SOFT</span> Downloaders</div>
+        </header>
+
+        <div class="result-stage">
+          <div class="result-loading" id="resultLoading" hidden>
+            <span class="result-spinner" aria-hidden="true"></span>
+            <p id="resultLoadingText">Analisando o link…</p>
+            <small>Isso pode levar alguns segundos.</small>
+          </div>
+
+          <div class="result-error" id="resultError" hidden>
+            <strong>Não foi possível concluir.</strong>
+            <p id="resultErrorText"></p>
+          </div>
+
+          <section class="result" id="result" hidden>
+            <div class="result-media">
+              <div class="result-preview" id="resultPreview"></div>
+              <div class="carousel-items" id="carouselItems" hidden></div>
+            </div>
+            <div class="result-actions">
+              <a class="download-link" id="downloadLink" href="#" download hidden>Baixar arquivo</a>
+              <p class="download-status" id="downloadStatus" role="status" aria-live="polite" hidden></p>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
 
     <footer>© <span id="year"></span> SOFT Downloaders. Use apenas conteúdo que você possui ou tem autorização para usar.</footer>
     <script src="app.js"></script>
