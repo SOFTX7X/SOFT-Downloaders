@@ -55,7 +55,7 @@ form.addEventListener('submit', async (event) => {
 function createPreview(data) {
   const tiktokPoster = data.source === 'tiktok' && data.type === 'video' && data.thumbnail;
   const element = document.createElement(tiktokPoster || data.type === 'image' ? 'img' : data.type === 'video' ? 'video' : 'audio');
-  element.src = tiktokPoster ? data.thumbnail : proxyMediaUrl(data.url, data.source, data.proxy_id);
+  element.src = tiktokPoster ? data.thumbnail : proxyMediaUrl(data.url, data.source, data.proxy_id, false);
   if (tiktokPoster) {
     element.alt = 'Prévia do vídeo do TikTok';
     element.addEventListener('error', () => element.remove());
@@ -72,7 +72,7 @@ function createPreview(data) {
 function renderMedia(data) {
   preview.replaceChildren(createPreview(data));
   carouselItems.hidden = true; carouselItems.replaceChildren();
-  downloadLink.href = '#'; downloadLink.dataset.mediaUrl = proxyMediaUrl(data.url, data.source, data.proxy_id);
+  downloadLink.href = '#'; downloadLink.dataset.mediaUrl = proxyMediaUrl(data.url, data.source, data.proxy_id, true);
   downloadLink.dataset.filename = data.filename || 'soft-download';
 }
 
@@ -86,7 +86,7 @@ function renderCarousel(items) {
     const button = document.createElement('button');
     button.type = 'button'; button.className = 'tile-download'; button.textContent = '↓';
     button.title = `Baixar mídia ${index + 1}`; button.setAttribute('aria-label', `Baixar mídia ${index + 1}`);
-    button.addEventListener('click', () => downloadMedia(proxyMediaUrl(item.url, item.source, item.proxy_id), item.filename || 'soft-download', button));
+    button.addEventListener('click', () => downloadMedia(proxyMediaUrl(item.url, item.source, item.proxy_id, true), item.filename || 'soft-download', button));
     tile.append(button); grid.append(tile);
   });
   preview.append(grid);
@@ -96,6 +96,23 @@ async function downloadMedia(mediaUrl, filename, button, quiet = false) {
   const originalLabel = button?.textContent;
   if (button) { button.disabled = true; button.textContent = '…'; }
   try {
+    const parsed = new URL(mediaUrl, window.location.href);
+    const isWorkerDownload = parsed.hostname === 'api.forgeaioficial.online' && parsed.pathname === '/media';
+
+    // O worker já transmite o arquivo. Não espere o vídeo inteiro virar um Blob
+    // no navegador: isso escondia o download por vários minutos no TikTok.
+    if (isWorkerDownload) {
+      const trigger = document.createElement('a');
+      trigger.href = mediaUrl;
+      trigger.rel = 'noopener';
+      document.body.append(trigger); trigger.click(); trigger.remove();
+      if (!quiet) {
+        note.className = 'form-note success';
+        note.textContent = 'Download solicitado. O navegador iniciará assim que a mídia começar a chegar.';
+      }
+      return;
+    }
+
     const response = await fetch(mediaUrl);
     if (!response.ok) throw new Error('Arquivo indisponível. Analise o link novamente.');
     const file = await response.blob();
@@ -110,8 +127,9 @@ async function downloadMedia(mediaUrl, filename, button, quiet = false) {
 
 function showError(message) { note.className = 'form-note error'; note.textContent = message; result.hidden = true; }
 
-function proxyMediaUrl(url, source, proxyId) {
+function proxyMediaUrl(url, source, proxyId, download = false) {
   if (!source || source === 'direct') return url;
-  if (proxyId) return `https://api.forgeaioficial.online/media?id=${encodeURIComponent(proxyId)}`;
-  return `https://api.forgeaioficial.online/media?url=${encodeURIComponent(url)}`;
+  const suffix = download ? '&dl=1' : '';
+  if (proxyId) return `https://api.forgeaioficial.online/media?id=${encodeURIComponent(proxyId)}${suffix}`;
+  return `https://api.forgeaioficial.online/media?url=${encodeURIComponent(url)}${suffix}`;
 }

@@ -15,7 +15,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
 try:
@@ -62,6 +62,12 @@ def clean_proxy_headers(headers):
         cleaned[str(name)] = value
     return cleaned
 
+
+
+
+def content_disposition(filename):
+    safe = Path(filename or "soft-download.mp4").name
+    return f"attachment; filename*=UTF-8''{quote(safe)}"
 
 def default_proxy_headers(source):
     referers = {
@@ -262,6 +268,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
     def proxy_media(self):
         query = parse_qs(urlparse(self.path).query)
         proxy_id = query.get("id", [""])[0]
+        download_requested = query.get("dl", [""])[0] == "1"
         cached = get_cached_media(proxy_id) if proxy_id else None
 
         if proxy_id:
@@ -296,7 +303,11 @@ class WorkerHandler(BaseHTTPRequestHandler):
         # deixamos o próprio yt-dlp refazer o desafio e transferir a mídia na
         # mesma execução, que é o fluxo aceito pelo TikTok.
         if source == "tiktok" and cached and cached.get("page_url"):
-            return self.proxy_tiktok_with_ytdlp(cached["page_url"])
+            return self.proxy_tiktok_with_ytdlp(
+                cached["page_url"],
+                cached.get("filename"),
+                download_requested,
+            )
 
         requested_range = self.headers.get("Range")
         if requested_range:
@@ -331,6 +342,8 @@ class WorkerHandler(BaseHTTPRequestHandler):
                     value = upstream.headers.get(name)
                     if value:
                         self.send_header(name, value)
+                if download_requested:
+                    self.send_header("Content-Disposition", content_disposition(cached.get("filename") if cached else None))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 for chunk in upstream.iter_content():
@@ -355,6 +368,8 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 for name in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
                     if upstream.headers.get(name):
                         self.send_header(name, upstream.headers[name])
+                if download_requested:
+                    self.send_header("Content-Disposition", content_disposition(cached.get("filename") if cached else None))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 while chunk := upstream.read(64 * 1024):
@@ -363,12 +378,15 @@ class WorkerHandler(BaseHTTPRequestHandler):
             print(f"Falha no proxy {source or 'desconhecido'} via urllib: {type(error).__name__}: {error}")
             self.respond(502, {"error": "Não foi possível preparar este arquivo."})
 
-    def proxy_tiktok_with_ytdlp(self, page_url):
+    def proxy_tiktok_with_ytdlp(self, page_url, filename=None, download_requested=False):
         command = [
             sys.executable, "-m", "yt_dlp",
             "--quiet", "--no-warnings", "--no-progress", "--no-playlist",
             "--impersonate", "chrome",
-            "-f", "best[ext=mp4]/best",
+            # Prioriza um MP4 com áudio já embutido. Nos formatos atuais do
+            # TikTok isso evita escolher H.265 1080p video-only, reduz o arquivo
+            # e entrega um vídeo H.264/AAC amplamente compatível.
+            "-f", "best[ext=mp4][height<=720][acodec!=none]/best[ext=mp4][acodec!=none]/best[ext=mp4]/best",
             "-o", "-",
             page_url,
         ]
@@ -395,6 +413,8 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 if origin in ALLOWED_ORIGINS:
                     self.send_header("Access-Control-Allow-Origin", origin)
                 self.send_header("Content-Type", "video/mp4")
+                if download_requested:
+                    self.send_header("Content-Disposition", content_disposition(filename))
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()
