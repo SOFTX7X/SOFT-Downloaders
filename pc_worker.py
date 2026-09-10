@@ -16,6 +16,11 @@ from threading import Lock
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
+try:
+    from curl_cffi import requests as curl_requests
+except Exception:
+    curl_requests = None
+
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "api"))
 
@@ -138,6 +143,8 @@ def extract_media(source_url):
         "socket_timeout": 25,
         "http_headers": {"User-Agent": "Mozilla/5.0"},
     }
+    if "tiktok" in host and curl_requests is not None:
+        options["impersonate"] = "chrome"
     try:
         with YoutubeDL(options) as extractor:
             info = extractor.extract_info(source_url, download=False)
@@ -270,8 +277,54 @@ class WorkerHandler(BaseHTTPRequestHandler):
         if parsed.scheme != "https" or not parsed.hostname:
             return self.respond(400, {"error": "Arquivo de mídia não permitido."})
 
-        if self.headers.get("Range"):
-            headers["Range"] = self.headers["Range"]
+        requested_range = self.headers.get("Range")
+        if requested_range:
+            headers["Range"] = requested_range
+        elif source == "tiktok":
+            # Alguns CDNs do TikTok recusam a transferência completa sem Range,
+            # embora aceitem a mesma URL durante a prévia do navegador.
+            headers["Range"] = "bytes=0-"
+
+        # TikTok valida não só os headers, mas também o fingerprint TLS/HTTP do
+        # cliente. urllib pode receber 403 mesmo com a URL e os headers corretos.
+        # curl_cffi usa impersonação de navegador e já é dependência do projeto.
+        if source == "tiktok" and curl_requests is not None:
+            upstream = None
+            try:
+                upstream = curl_requests.get(
+                    source_url,
+                    headers=headers,
+                    impersonate="chrome",
+                    default_headers=True,
+                    accept_encoding="identity",
+                    allow_redirects=True,
+                    stream=True,
+                    timeout=45,
+                )
+                upstream.raise_for_status()
+                self.send_response(upstream.status_code)
+                origin = self.headers.get("Origin")
+                if origin in ALLOWED_ORIGINS:
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                for name in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+                    value = upstream.headers.get(name)
+                    if value:
+                        self.send_header(name, value)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                for chunk in upstream.iter_content():
+                    if chunk:
+                        self.wfile.write(chunk)
+                return
+            except Exception as error:
+                print(f"Falha no proxy TikTok via curl_cffi: {type(error).__name__}: {error}")
+            finally:
+                if upstream is not None:
+                    try:
+                        upstream.close()
+                    except Exception:
+                        pass
+
         try:
             with urlopen(Request(source_url, headers=headers), timeout=45) as upstream:
                 self.send_response(getattr(upstream, "status", 200))
@@ -285,7 +338,8 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 while chunk := upstream.read(64 * 1024):
                     self.wfile.write(chunk)
-        except Exception:
+        except Exception as error:
+            print(f"Falha no proxy {source or 'desconhecido'} via urllib: {type(error).__name__}: {error}")
             self.respond(502, {"error": "Não foi possível preparar este arquivo."})
 
     def log_message(self, *_):
