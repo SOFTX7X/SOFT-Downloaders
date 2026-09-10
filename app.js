@@ -53,15 +53,19 @@ form.addEventListener('submit', async (event) => {
 });
 
 function createPreview(data) {
-  const element = document.createElement(data.type === 'image' ? 'img' : data.type === 'video' ? 'video' : 'audio');
-  element.src = proxyMediaUrl(data.url, data.source, data.proxy_id);
-  if (data.type === 'video') {
+  const tiktokPoster = data.source === 'tiktok' && data.type === 'video' && data.thumbnail;
+  const element = document.createElement(tiktokPoster || data.type === 'image' ? 'img' : data.type === 'video' ? 'video' : 'audio');
+  element.src = tiktokPoster ? data.thumbnail : proxyMediaUrl(data.url, data.source, data.proxy_id);
+  if (tiktokPoster) {
+    element.alt = 'Prévia do vídeo do TikTok';
+    element.addEventListener('error', () => element.remove());
+  } else if (data.type === 'video') {
     element.autoplay = true; element.muted = true; element.loop = true; element.playsInline = true;
     element.controls = false; element.disablePictureInPicture = true;
     element.setAttribute('controlsList', 'nodownload nofullscreen noremoteplayback');
   }
   if (data.type === 'audio') element.controls = true;
-  element.addEventListener('error', () => showError('Não foi possível carregar esta mídia. Confirme se o link é público e direto.'));
+  if (!tiktokPoster) element.addEventListener('error', () => showError('Não foi possível carregar esta mídia. Confirme se o link é público e direto.'));
   return element;
 }
 

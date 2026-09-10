@@ -8,7 +8,9 @@ import json
 import hmac
 import os
 import secrets
+import subprocess
 import sys
+import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -74,13 +76,15 @@ def default_proxy_headers(source):
     }
 
 
-def cache_media(url, headers, source):
+def cache_media(url, headers, source, page_url=None, filename=None):
     now = time.monotonic()
     token = secrets.token_urlsafe(24)
     entry = {
         "url": url,
         "headers": clean_proxy_headers(headers),
         "source": source,
+        "page_url": page_url,
+        "filename": filename,
         "expires": now + MEDIA_CACHE_TTL,
     }
     with MEDIA_CACHE_LOCK:
@@ -101,7 +105,7 @@ def get_cached_media(token):
         return {**entry, "headers": dict(entry["headers"])}
 
 
-def prepare_media_response(media):
+def prepare_media_response(media, source_url):
     if not media:
         return media
 
@@ -109,16 +113,26 @@ def prepare_media_response(media):
     for item in items:
         if not item or not item.get("url"):
             continue
+        item_source = item.get("source") or media.get("source")
         item["proxy_id"] = cache_media(
-            item["url"], item.get("http_headers"), item.get("source") or media.get("source")
+            item["url"],
+            item.get("http_headers"),
+            item_source,
+            page_url=source_url if item_source == "tiktok" else None,
+            filename=item.get("filename"),
         )
         item.pop("http_headers", None)
 
     if items and media.get("url") == items[0].get("url"):
         media["proxy_id"] = items[0].get("proxy_id")
     elif media.get("url"):
+        media_source = media.get("source")
         media["proxy_id"] = cache_media(
-            media["url"], media.get("http_headers"), media.get("source")
+            media["url"],
+            media.get("http_headers"),
+            media_source,
+            page_url=source_url if media_source == "tiktok" else None,
+            filename=media.get("filename"),
         )
 
     media.pop("http_headers", None)
@@ -227,7 +241,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
             media, error = extract_media(str(data.get("url", "")).strip())
             if error:
                 return self.respond(422, {"error": error})
-            return self.respond(200, prepare_media_response(media))
+            return self.respond(200, prepare_media_response(media, str(data.get("url", "")).strip()))
         except Exception:
             return self.respond(422, {"error": "Não foi possível processar esse link agora."})
 
@@ -276,6 +290,13 @@ class WorkerHandler(BaseHTTPRequestHandler):
         parsed = urlparse(source_url)
         if parsed.scheme != "https" or not parsed.hostname:
             return self.respond(400, {"error": "Arquivo de mídia não permitido."})
+
+        # No TikTok, a URL CDN extraída pode responder 403 quando é acessada em
+        # uma segunda sessão. Mantemos a URL original da publicação no cache e
+        # deixamos o próprio yt-dlp refazer o desafio e transferir a mídia na
+        # mesma execução, que é o fluxo aceito pelo TikTok.
+        if source == "tiktok" and cached and cached.get("page_url"):
+            return self.proxy_tiktok_with_ytdlp(cached["page_url"])
 
         requested_range = self.headers.get("Range")
         if requested_range:
@@ -341,6 +362,70 @@ class WorkerHandler(BaseHTTPRequestHandler):
         except Exception as error:
             print(f"Falha no proxy {source or 'desconhecido'} via urllib: {type(error).__name__}: {error}")
             self.respond(502, {"error": "Não foi possível preparar este arquivo."})
+
+    def proxy_tiktok_with_ytdlp(self, page_url):
+        command = [
+            sys.executable, "-m", "yt_dlp",
+            "--quiet", "--no-warnings", "--no-progress", "--no-playlist",
+            "--impersonate", "chrome",
+            "-f", "best[ext=mp4]/best",
+            "-o", "-",
+            page_url,
+        ]
+
+        process = None
+        with tempfile.TemporaryFile(mode="w+b") as error_log:
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=error_log,
+                    bufsize=0,
+                )
+                first_chunk = process.stdout.read(64 * 1024) if process.stdout else b""
+                if not first_chunk:
+                    return_code = process.wait(timeout=15)
+                    error_log.seek(0)
+                    detail = error_log.read().decode("utf-8", "ignore").strip()
+                    print(f"Falha no download TikTok via yt-dlp ({return_code}): {detail[-1200:]}")
+                    return self.respond(502, {"error": "Não foi possível preparar este vídeo do TikTok."})
+
+                self.send_response(200)
+                origin = self.headers.get("Origin")
+                if origin in ALLOWED_ORIGINS:
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(first_chunk)
+
+                while process.stdout:
+                    chunk = process.stdout.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+
+                return_code = process.wait()
+                if return_code != 0:
+                    error_log.seek(0)
+                    detail = error_log.read().decode("utf-8", "ignore").strip()
+                    print(f"TikTok interrompido pelo yt-dlp ({return_code}): {detail[-1200:]}")
+            except (BrokenPipeError, ConnectionResetError):
+                if process and process.poll() is None:
+                    process.terminate()
+            except Exception as error:
+                if process and process.poll() is None:
+                    process.terminate()
+                print(f"Falha no streaming TikTok via yt-dlp: {type(error).__name__}: {error}")
+                if not self.wfile.closed:
+                    try:
+                        self.respond(502, {"error": "Não foi possível preparar este vídeo do TikTok."})
+                    except Exception:
+                        pass
+            finally:
+                if process and process.poll() is None:
+                    process.kill()
 
     def log_message(self, *_):
         pass
