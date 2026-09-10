@@ -94,22 +94,30 @@ function renderCarousel(items) {
 
 async function downloadMedia(mediaUrl, filename, button, quiet = false) {
   const originalLabel = button?.textContent;
-  if (button) { button.disabled = true; button.textContent = '…'; }
+  const status = ensureDownloadStatus();
+  let restoreTimer;
+
+  if (button) { button.disabled = true; button.textContent = 'Preparando download…'; }
+  showDownloadStatus(status, 'Preparando seu download… aguarde alguns segundos.');
+
   try {
     const parsed = new URL(mediaUrl, window.location.href);
     const isWorkerDownload = parsed.hostname === 'api.forgeaioficial.online' && parsed.pathname === '/media';
 
-    // O worker já transmite o arquivo. Não espere o vídeo inteiro virar um Blob
-    // no navegador: isso escondia o download por vários minutos no TikTok.
+    // O worker transmite o arquivo diretamente. O navegador não oferece um
+    // evento confiável para avisar quando um download por attachment começou,
+    // então mantemos um estado visível junto ao botão durante a preparação.
     if (isWorkerDownload) {
       const trigger = document.createElement('a');
       trigger.href = mediaUrl;
       trigger.rel = 'noopener';
       document.body.append(trigger); trigger.click(); trigger.remove();
-      if (!quiet) {
-        note.className = 'form-note success';
-        note.textContent = 'Download solicitado. O navegador iniciará assim que a mídia começar a chegar.';
-      }
+
+      restoreTimer = window.setTimeout(() => {
+        if (button) { button.disabled = false; button.textContent = originalLabel; }
+        showDownloadStatus(status, 'Download enviado ao navegador.');
+        window.setTimeout(() => hideDownloadStatus(status), 4500);
+      }, 12000);
       return;
     }
 
@@ -121,8 +129,42 @@ async function downloadMedia(mediaUrl, filename, button, quiet = false) {
     trigger.href = objectUrl; trigger.download = filename;
     document.body.append(trigger); trigger.click(); trigger.remove();
     setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-    if (!quiet) { note.className = 'form-note success'; note.textContent = 'Download iniciado.'; }
-  } finally { if (button) { button.disabled = false; button.textContent = originalLabel; } }
+    showDownloadStatus(status, 'Download iniciado.');
+    window.setTimeout(() => hideDownloadStatus(status), 3500);
+  } catch (error) {
+    showDownloadStatus(status, error.message || 'Não foi possível iniciar o download.', true);
+    throw error;
+  } finally {
+    if (!restoreTimer && button) { button.disabled = false; button.textContent = originalLabel; }
+  }
+}
+
+function ensureDownloadStatus() {
+  let status = document.querySelector('#downloadStatus');
+  if (status) return status;
+  status = document.createElement('p');
+  status.id = 'downloadStatus';
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  status.hidden = true;
+  downloadLink.insertAdjacentElement('afterend', status);
+  return status;
+}
+
+function showDownloadStatus(status, message, isError = false) {
+  if (!status) return;
+  status.hidden = false;
+  status.textContent = message;
+  status.style.margin = '12px 0 0';
+  status.style.fontWeight = '700';
+  status.style.fontSize = '14px';
+  status.style.color = isError ? '#d43c4c' : 'var(--violet)';
+}
+
+function hideDownloadStatus(status) {
+  if (!status) return;
+  status.hidden = true;
+  status.textContent = '';
 }
 
 function showError(message) { note.className = 'form-note error'; note.textContent = message; result.hidden = true; }
