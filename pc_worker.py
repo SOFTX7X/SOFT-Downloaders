@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "api"))
 from extract import (  # noqa: E402
     ALLOWED_HOSTS,
     extract_instagram_embed,
+    extract_instagram_post_image,
     normalize_media,
 )
 from yt_dlp import YoutubeDL  # noqa: E402
@@ -35,6 +36,16 @@ def extract_media(source_url):
         host == item or host.endswith("." + item) for item in ALLOWED_HOSTS
     ):
         return None, "Use um link público de Instagram, TikTok, YouTube ou Facebook."
+
+    # O Instagram não entrega fotos como "formato de vídeo" ao yt-dlp.
+    # Lemos a imagem pública do post antes de tentar a extração de vídeos.
+    if "instagram" in host and parsed.path.startswith("/p/"):
+        try:
+            image = extract_instagram_post_image(source_url)
+            if image:
+                return image, None
+        except Exception:
+            pass
 
     options = {
         "quiet": True,

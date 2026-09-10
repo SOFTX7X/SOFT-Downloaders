@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from html import unescape
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -128,6 +129,35 @@ def extract_instagram_embed(source_url):
         "status": "ready", "source": "instagram", "type": kind, "url": media_url,
         "title": "Mídia do Instagram", "thumbnail": image_url,
         "filename": f"instagram-{parts[1]}.{extension}", "media_count": 1,
+    }
+
+
+def extract_instagram_post_image(source_url):
+    """Gets the public cover image for an Instagram photo or a carousel's first item."""
+    parsed = urlparse(source_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2 or parts[0] != "p":
+        return None
+    request = Request(
+        f"https://www.instagram.com/p/{parts[1]}/",
+        headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "en-US,en;q=0.8"},
+    )
+    with urlopen(request, timeout=25) as response:
+        page = response.read().decode("utf-8", "ignore")
+    match = re.search(
+        r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', page, re.IGNORECASE
+    )
+    if not match:
+        return None
+    image_url = unescape(match.group(1))
+    title_match = re.search(
+        r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"', page, re.IGNORECASE
+    )
+    title = unescape(title_match.group(1)) if title_match else "Imagem do Instagram"
+    return {
+        "status": "ready", "source": "instagram", "type": "image", "url": image_url,
+        "title": title, "thumbnail": image_url,
+        "filename": f"instagram-{parts[1]}.jpg", "media_count": 1,
     }
 
 
