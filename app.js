@@ -108,7 +108,18 @@ function renderCarousel(items) {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = `carousel-item${index === 0 ? ' active' : ''}`;
-    button.textContent = `${index + 1}. ${item.type === 'image' ? 'Imagem' : item.type === 'video' ? 'Vídeo' : 'Áudio'}`;
+    button.setAttribute('aria-label', `Abrir ${item.type === 'image' ? 'imagem' : item.type === 'video' ? 'vídeo' : 'áudio'} ${index + 1}`);
+    const thumbnail = document.createElement(item.type === 'video' ? 'img' : item.type === 'audio' ? 'span' : 'img');
+    if (thumbnail.tagName === 'IMG') {
+      thumbnail.src = item.thumbnail || item.url;
+      thumbnail.alt = '';
+    } else {
+      thumbnail.textContent = 'Áudio';
+    }
+    const badge = document.createElement('span');
+    badge.className = 'carousel-index';
+    badge.textContent = index + 1;
+    button.append(thumbnail, badge);
     button.addEventListener('click', () => {
       renderMedia(item);
       carouselItems.querySelectorAll('.carousel-item').forEach((entry) => entry.classList.remove('active'));
