@@ -5,48 +5,34 @@ const result = document.querySelector('#result');
 const preview = document.querySelector('#resultPreview');
 const downloadLink = document.querySelector('#downloadLink');
 const carouselItems = document.querySelector('#carouselItems');
+const downloadAll = document.querySelector('#downloadAll');
 
 document.querySelector('#year').textContent = new Date().getFullYear();
-
 document.querySelector('#pasteButton').addEventListener('click', async () => {
   try { input.value = await navigator.clipboard.readText(); input.focus(); } catch { input.focus(); }
 });
 
 downloadLink.addEventListener('click', async (event) => {
-  const mediaUrl = downloadLink.dataset.mediaUrl;
-  if (!mediaUrl) return;
   event.preventDefault();
-  const originalLabel = downloadLink.textContent;
-  downloadLink.textContent = 'Preparando arquivo…';
-  downloadLink.setAttribute('aria-busy', 'true');
+  if (downloadLink.dataset.mediaUrl) await downloadMedia(downloadLink.dataset.mediaUrl, downloadLink.dataset.filename, downloadLink);
+});
+downloadAll.addEventListener('click', async () => {
+  const items = downloadAll._items || [];
+  if (!items.length) return;
+  downloadAll.disabled = true;
+  downloadAll.textContent = 'Preparando downloads…';
   try {
-    const response = await fetch(mediaUrl);
-    if (!response.ok) throw new Error('Arquivo indisponível. Analise o link novamente.');
-    const file = await response.blob();
-    const objectUrl = URL.createObjectURL(file);
-    const trigger = document.createElement('a');
-    trigger.href = objectUrl;
-    trigger.download = downloadLink.dataset.filename || 'soft-download';
-    document.body.append(trigger);
-    trigger.click();
-    trigger.remove();
-    URL.revokeObjectURL(objectUrl);
-    note.className = 'form-note success';
-    note.textContent = 'Download iniciado.';
-  } catch (error) {
-    showError(error.message || 'Não foi possível preparar o arquivo para download.');
-  } finally {
-    downloadLink.textContent = originalLabel;
-    downloadLink.removeAttribute('aria-busy');
-  }
+    for (const item of items) await downloadMedia(item.url, item.filename || 'soft-download', null, true);
+    note.className = 'form-note success'; note.textContent = 'Downloads iniciados.';
+  } catch (error) { showError(error.message || 'Não foi possível preparar os downloads.'); }
+  finally { downloadAll.disabled = false; downloadAll.textContent = 'Baixar todos'; }
 });
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   const rawUrl = input.value.trim();
   if (!rawUrl) return showError('Cole um link para analisar.');
-  note.className = 'form-note';
-  note.textContent = 'Analisando o link…';
+  note.className = 'form-note'; note.textContent = 'Analisando o link…';
   let data;
   try {
     const response = await fetch('/api/resolve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: rawUrl }) });
@@ -54,7 +40,6 @@ form.addEventListener('submit', async (event) => {
     if (!response.ok) throw new Error(data.error || 'Não foi possível analisar o link.');
   } catch (error) { return showError(error.message || 'Não foi possível analisar o link.'); }
   if (data.status === 'pending') {
-    note.className = 'form-note';
     note.textContent = `Lendo publicação do ${data.source}…`;
     try {
       const extraction = await fetch('/api/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: rawUrl }) });
@@ -65,68 +50,72 @@ form.addEventListener('submit', async (event) => {
   if (data.status !== 'ready') return showError(data.message || 'Este link ainda não é compatível.');
 
   const items = Array.isArray(data.items) && data.items.length ? data.items : [data];
-  renderMedia(items[0]);
-  renderCarousel(items);
+  const isCarousel = items.length > 1;
+  result.classList.toggle('is-carousel', isCarousel);
+  if (isCarousel) renderCarousel(items); else renderMedia(items[0]);
+  downloadLink.hidden = isCarousel;
+  downloadAll.hidden = !isCarousel;
+  downloadAll._items = isCarousel ? items : [];
+  document.querySelector('#resultType').textContent = isCarousel ? 'CARROSSEL ENCONTRADO' : data.type === 'image' ? 'IMAGEM ENCONTRADA' : data.type === 'video' ? 'VÍDEO ENCONTRADO' : 'ÁUDIO ENCONTRADO';
   document.querySelector('#resultTitle').textContent = data.title || 'Mídia pronta para baixar';
-  document.querySelector('#resultDescription').textContent = items.length > 1
-    ? `Carrossel com ${items.length} mídias. Selecione uma para pré-visualizar e baixar.`
+  document.querySelector('#resultDescription').textContent = isCarousel
+    ? `${items.length} mídias encontradas. Baixe uma pelo ícone ou todas de uma vez.`
     : 'A prévia foi carregada a partir do link informado. Confira antes de salvar.';
-  note.className = 'form-note success';
-  note.textContent = items.length > 1 ? `${items.length} mídias encontradas no carrossel.` : 'Link analisado. A prévia está pronta abaixo.';
+  note.className = 'form-note success'; note.textContent = isCarousel ? `${items.length} mídias encontradas no carrossel.` : 'Link analisado. A prévia está pronta abaixo.';
   result.hidden = false;
-  result.scrollIntoView({ behavior:'smooth', block:'nearest' });
+  result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 });
 
-function renderMedia(data) {
-  preview.replaceChildren();
+function createPreview(data) {
   const element = document.createElement(data.type === 'image' ? 'img' : data.type === 'video' ? 'video' : 'audio');
   element.src = data.url;
   if (data.type === 'video') {
-    element.autoplay = true;
-    element.muted = true;
-    element.loop = true;
-    element.playsInline = true;
-    element.controls = false;
-    element.disablePictureInPicture = true;
+    element.autoplay = true; element.muted = true; element.loop = true; element.playsInline = true;
+    element.controls = false; element.disablePictureInPicture = true;
     element.setAttribute('controlsList', 'nodownload nofullscreen noremoteplayback');
-    element.setAttribute('aria-label', 'Prévia automática do vídeo');
   }
   if (data.type === 'audio') element.controls = true;
   element.addEventListener('error', () => showError('Não foi possível carregar esta mídia. Confirme se o link é público e direto.'));
-  preview.append(element);
-  downloadLink.href = '#';
-  downloadLink.dataset.mediaUrl = data.url;
+  return element;
+}
+
+function renderMedia(data) {
+  preview.replaceChildren(createPreview(data));
+  carouselItems.hidden = true; carouselItems.replaceChildren();
+  downloadLink.href = '#'; downloadLink.dataset.mediaUrl = data.url;
   downloadLink.dataset.filename = data.filename || 'soft-download';
-  document.querySelector('#resultType').textContent = data.type === 'image' ? 'IMAGEM ENCONTRADA' : data.type === 'video' ? 'VÍDEO ENCONTRADO' : 'ÁUDIO ENCONTRADO';
 }
 
 function renderCarousel(items) {
-  carouselItems.replaceChildren();
-  if (items.length < 2) { carouselItems.hidden = true; return; }
-  carouselItems.hidden = false;
+  preview.replaceChildren();
+  carouselItems.hidden = true; carouselItems.replaceChildren();
+  const grid = document.createElement('div'); grid.className = 'carousel-grid';
   items.forEach((item, index) => {
+    const tile = document.createElement('article'); tile.className = 'carousel-tile';
+    tile.append(createPreview(item));
     const button = document.createElement('button');
-    button.type = 'button';
-    button.className = `carousel-item${index === 0 ? ' active' : ''}`;
-    button.setAttribute('aria-label', `Abrir ${item.type === 'image' ? 'imagem' : item.type === 'video' ? 'vídeo' : 'áudio'} ${index + 1}`);
-    const thumbnail = document.createElement(item.type === 'video' ? 'img' : item.type === 'audio' ? 'span' : 'img');
-    if (thumbnail.tagName === 'IMG') {
-      thumbnail.src = item.thumbnail || item.url;
-      thumbnail.alt = '';
-    } else {
-      thumbnail.textContent = 'Áudio';
-    }
-    const badge = document.createElement('span');
-    badge.className = 'carousel-index';
-    badge.textContent = index + 1;
-    button.append(thumbnail, badge);
-    button.addEventListener('click', () => {
-      renderMedia(item);
-      carouselItems.querySelectorAll('.carousel-item').forEach((entry) => entry.classList.remove('active'));
-      button.classList.add('active');
-    });
-    carouselItems.append(button);
+    button.type = 'button'; button.className = 'tile-download'; button.textContent = '↓';
+    button.title = `Baixar mídia ${index + 1}`; button.setAttribute('aria-label', `Baixar mídia ${index + 1}`);
+    button.addEventListener('click', () => downloadMedia(item.url, item.filename || 'soft-download', button));
+    tile.append(button); grid.append(tile);
   });
+  preview.append(grid);
+}
+
+async function downloadMedia(mediaUrl, filename, button, quiet = false) {
+  const originalLabel = button?.textContent;
+  if (button) { button.disabled = true; button.textContent = '…'; }
+  try {
+    const response = await fetch(mediaUrl);
+    if (!response.ok) throw new Error('Arquivo indisponível. Analise o link novamente.');
+    const file = await response.blob();
+    const objectUrl = URL.createObjectURL(file);
+    const trigger = document.createElement('a');
+    trigger.href = objectUrl; trigger.download = filename;
+    document.body.append(trigger); trigger.click(); trigger.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    if (!quiet) { note.className = 'form-note success'; note.textContent = 'Download iniciado.'; }
+  } finally { if (button) { button.disabled = false; button.textContent = originalLabel; } }
 }
 
 function showError(message) { note.className = 'form-note error'; note.textContent = message; result.hidden = true; }
