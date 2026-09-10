@@ -46,6 +46,8 @@ MEDIA_HOSTS = (
 MEDIA_CACHE_TTL = 20 * 60
 MEDIA_CACHE = {}
 MEDIA_CACHE_LOCK = Lock()
+RUNTIME_CACHE_DIR = Path(tempfile.gettempdir()) / "soft-downloaders-worker-cache"
+RUNTIME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 SAFE_PROXY_HEADERS = {
     "accept", "accept-language", "origin", "referer", "user-agent",
     "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site",
@@ -83,21 +85,55 @@ def default_proxy_headers(source):
     }
 
 
-def cache_media(url, headers, source, page_url=None, filename=None):
+def cleanup_cache_entry(entry):
+    for key in ("info_path", "cookiefile"):
+        value = entry.get(key) if entry else None
+        if not value:
+            continue
+        try:
+            Path(value).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def cache_media(
+    url,
+    headers,
+    source,
+    page_url=None,
+    filename=None,
+    tiktok_info=None,
+    tiktok_cookiefile=None,
+):
     now = time.monotonic()
     token = secrets.token_urlsafe(24)
+    info_path = None
+
+    if source == "tiktok" and tiktok_info:
+        try:
+            info_path = RUNTIME_CACHE_DIR / f"{token}.info.json"
+            info_path.write_text(
+                json.dumps(tiktok_info, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as error:
+            print(f"Falha ao salvar info-json temporário do TikTok: {type(error).__name__}: {error}")
+            info_path = None
+
     entry = {
         "url": url,
         "headers": clean_proxy_headers(headers),
         "source": source,
         "page_url": page_url,
         "filename": filename,
+        "info_path": str(info_path) if info_path else None,
+        "cookiefile": tiktok_cookiefile if source == "tiktok" else None,
         "expires": now + MEDIA_CACHE_TTL,
     }
     with MEDIA_CACHE_LOCK:
         expired = [key for key, item in MEDIA_CACHE.items() if item["expires"] <= now]
         for key in expired:
-            MEDIA_CACHE.pop(key, None)
+            cleanup_cache_entry(MEDIA_CACHE.pop(key, None))
         MEDIA_CACHE[token] = entry
     return token
 
@@ -107,44 +143,63 @@ def get_cached_media(token):
     with MEDIA_CACHE_LOCK:
         entry = MEDIA_CACHE.get(token)
         if not entry or entry["expires"] <= now:
-            MEDIA_CACHE.pop(token, None)
+            cleanup_cache_entry(MEDIA_CACHE.pop(token, None))
             return None
         return {**entry, "headers": dict(entry["headers"])}
-
 
 def prepare_media_response(media, source_url):
     if not media:
         return media
 
+    tiktok_info = media.pop("_tiktok_info", None)
+    tiktok_cookiefile = media.pop("_tiktok_cookiefile", None)
     items = media.get("items") if isinstance(media.get("items"), list) else []
+    tiktok_cache_used = False
+
     for item in items:
         if not item or not item.get("url"):
             continue
         item_source = item.get("source") or media.get("source")
+        use_tiktok_bundle = item_source == "tiktok" and not tiktok_cache_used
         item["proxy_id"] = cache_media(
             item["url"],
             item.get("http_headers"),
             item_source,
             page_url=source_url if item_source == "tiktok" else None,
             filename=item.get("filename"),
+            tiktok_info=tiktok_info if use_tiktok_bundle else None,
+            tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
         )
+        if use_tiktok_bundle:
+            tiktok_cache_used = True
         item.pop("http_headers", None)
 
     if items and media.get("url") == items[0].get("url"):
         media["proxy_id"] = items[0].get("proxy_id")
     elif media.get("url"):
         media_source = media.get("source")
+        use_tiktok_bundle = media_source == "tiktok" and not tiktok_cache_used
         media["proxy_id"] = cache_media(
             media["url"],
             media.get("http_headers"),
             media_source,
             page_url=source_url if media_source == "tiktok" else None,
             filename=media.get("filename"),
+            tiktok_info=tiktok_info if use_tiktok_bundle else None,
+            tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
         )
+        if use_tiktok_bundle:
+            tiktok_cache_used = True
+
+    # Se por algum motivo o TikTok não gerou cache, não deixe cookie temporário órfão.
+    if tiktok_cookiefile and not tiktok_cache_used:
+        try:
+            Path(tiktok_cookiefile).unlink(missing_ok=True)
+        except Exception:
+            pass
 
     media.pop("http_headers", None)
     return media
-
 
 def extract_media(source_url):
     parsed = urlparse(source_url)
@@ -154,6 +209,9 @@ def extract_media(source_url):
     ):
         return None, "Use um link público de Instagram, TikTok, YouTube ou Facebook."
 
+    is_tiktok = "tiktok" in host
+    tiktok_cookiefile = None
+    tiktok_info = None
     options = {
         "quiet": True,
         "no_warnings": True,
@@ -163,15 +221,24 @@ def extract_media(source_url):
         "ignore_no_formats_error": True,
         "socket_timeout": 25,
     }
-    if "tiktok" in host and curl_requests is not None:
+    if is_tiktok and curl_requests is not None:
         # A API Python do yt-dlp espera um ImpersonateTarget já convertido.
-        # A CLI faz essa conversão automaticamente para --impersonate chrome.
         options["impersonate"] = ImpersonateTarget.from_str("chrome")
+        # O TikTok cria cookies de desafio durante a análise. Salvamos esses
+        # cookies para o download reutilizar a MESMA sessão, sem reabrir a
+        # página do TikTok e sem enfrentar um segundo desafio instável.
+        tiktok_cookiefile = str(
+            RUNTIME_CACHE_DIR / f"extract-{secrets.token_urlsafe(18)}.cookies.txt"
+        )
+        options["cookiefile"] = tiktok_cookiefile
     else:
         options["http_headers"] = {"User-Agent": "Mozilla/5.0"}
+
     try:
         with YoutubeDL(options) as extractor:
             info = extractor.extract_info(source_url, download=False)
+            if is_tiktok and info:
+                tiktok_info = extractor.sanitize_info(info)
         media = normalize_carousel_media(info, host)
     except Exception:
         media = None
@@ -191,9 +258,17 @@ def extract_media(source_url):
             media = None
 
     if not media:
+        if tiktok_cookiefile:
+            try:
+                Path(tiktok_cookiefile).unlink(missing_ok=True)
+            except Exception:
+                pass
         return None, "Não foi possível ler este link agora. Confirme se a publicação é pública e tente novamente."
-    return media, None
 
+    if is_tiktok:
+        media["_tiktok_info"] = tiktok_info
+        media["_tiktok_cookiefile"] = tiktok_cookiefile
+    return media, None
 
 def normalize_carousel_media(info, host):
     if not info:
@@ -302,16 +377,11 @@ class WorkerHandler(BaseHTTPRequestHandler):
         if parsed.scheme != "https" or not parsed.hostname:
             return self.respond(400, {"error": "Arquivo de mídia não permitido."})
 
-        # No TikTok, a URL CDN extraída pode responder 403 quando é acessada em
-        # uma segunda sessão. Mantemos a URL original da publicação no cache e
-        # deixamos o próprio yt-dlp refazer o desafio e transferir a mídia na
-        # mesma execução, que é o fluxo aceito pelo TikTok.
-        if source == "tiktok" and cached and cached.get("page_url"):
-            return self.proxy_tiktok_with_ytdlp(
-                cached["page_url"],
-                cached.get("filename"),
-                download_requested,
-            )
+        # No TikTok, reutilizamos o info-json e os cookies gerados na própria
+        # análise. Assim o download NÃO abre a página do TikTok uma segunda vez,
+        # evitando o erro intermitente "Unable to extract universal data for rehydration".
+        if source == "tiktok" and cached:
+            return self.proxy_tiktok_with_ytdlp(cached, download_requested)
 
         requested_range = self.headers.get("Range")
         if requested_range:
@@ -382,18 +452,33 @@ class WorkerHandler(BaseHTTPRequestHandler):
             print(f"Falha no proxy {source or 'desconhecido'} via urllib: {type(error).__name__}: {error}")
             self.respond(502, {"error": "Não foi possível preparar este arquivo."})
 
-    def proxy_tiktok_with_ytdlp(self, page_url, filename=None, download_requested=False):
+    def proxy_tiktok_with_ytdlp(self, cached, download_requested=False):
+        info_path = cached.get("info_path")
+        cookiefile = cached.get("cookiefile")
+        page_url = cached.get("page_url")
+        filename = cached.get("filename")
+
         command = [
             sys.executable, "-m", "yt_dlp",
             "--quiet", "--no-warnings", "--no-progress", "--no-playlist",
             "--impersonate", "chrome",
-            # Prioriza um MP4 com áudio já embutido. Nos formatos atuais do
-            # TikTok isso evita escolher H.265 1080p video-only, reduz o arquivo
-            # e entrega um vídeo H.264/AAC amplamente compatível.
             "-f", "best[ext=mp4][height<=720][acodec!=none]/best[ext=mp4][acodec!=none]/best[ext=mp4]/best",
             "-o", "-",
-            page_url,
         ]
+
+        # Caminho principal: usa os metadados + cookies da análise que acabou de
+        # funcionar. --load-info-json não reabre a página nem resolve o desafio
+        # JavaScript de novo; ele vai direto para a transferência da mídia.
+        if info_path and Path(info_path).is_file():
+            if cookiefile and Path(cookiefile).is_file():
+                command.extend(["--cookies", cookiefile])
+            command.extend(["--load-info-json", info_path])
+        elif page_url:
+            # Fallback para tokens antigos ainda existentes na memória depois de
+            # atualização de código. Tokens novos sempre usam info-json.
+            command.append(page_url)
+        else:
+            return self.respond(410, {"error": "Este link expirou. Analise a publicação novamente."})
 
         process = None
         with tempfile.TemporaryFile(mode="w+b") as error_log:
@@ -406,10 +491,10 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 )
                 first_chunk = process.stdout.read(64 * 1024) if process.stdout else b""
                 if not first_chunk:
-                    return_code = process.wait(timeout=15)
+                    return_code = process.wait(timeout=20)
                     error_log.seek(0)
                     detail = error_log.read().decode("utf-8", "ignore").strip()
-                    print(f"Falha no download TikTok via yt-dlp ({return_code}): {detail[-1200:]}")
+                    print(f"Falha no download TikTok via yt-dlp ({return_code}): {detail[-1600:]}")
                     return self.respond(502, {"error": "Não foi possível preparar este vídeo do TikTok."})
 
                 self.send_response(200)
@@ -434,7 +519,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 if return_code != 0:
                     error_log.seek(0)
                     detail = error_log.read().decode("utf-8", "ignore").strip()
-                    print(f"TikTok interrompido pelo yt-dlp ({return_code}): {detail[-1200:]}")
+                    print(f"TikTok interrompido pelo yt-dlp ({return_code}): {detail[-1600:]}")
             except (BrokenPipeError, ConnectionResetError):
                 if process and process.poll() is None:
                     process.terminate()
