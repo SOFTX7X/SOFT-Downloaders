@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
@@ -23,6 +24,13 @@ class handler(BaseHTTPRequestHandler):
             host = parsed.hostname.lower().removeprefix("www.") if parsed.hostname else ""
             if parsed.scheme not in ("http", "https") or not any(host == item or host.endswith("." + item) for item in ALLOWED_HOSTS):
                 return self.respond(400, {"error": "Use um link público de Instagram, TikTok, YouTube ou Facebook."})
+
+            worker_url = os.environ.get("SOFT_WORKER_URL", "").rstrip("/")
+            worker_secret = os.environ.get("SOFT_WORKER_SECRET", "")
+            if worker_url and worker_secret:
+                proxied = request_pc_worker(worker_url, worker_secret, source_url)
+                if proxied:
+                    return self.respond(200, proxied)
 
             options = {
                 "quiet": True,
@@ -128,6 +136,27 @@ def extract_embedded_url(page, field):
     if not match:
         return None
     return match.group(1).replace("\\u0026", "&").replace("\\/", "/").replace("\\", "")
+
+
+def request_pc_worker(worker_url, worker_secret, source_url):
+    """Calls the private PC worker only when both Vercel secrets are configured."""
+    body = json.dumps({"url": source_url}).encode("utf-8")
+    request = Request(
+        f"{worker_url}/extract",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Soft-Worker-Key": worker_secret,
+            "User-Agent": "SOFT-Downloaders/1.0",
+        },
+    )
+    try:
+        with urlopen(request, timeout=35) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        return data if data.get("status") == "ready" and data.get("url") else None
+    except Exception:
+        return None
 
 
 def safe_filename(value):
