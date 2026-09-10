@@ -7,9 +7,12 @@ Não armazena links, contas ou arquivos de quem usa o site.
 import json
 import hmac
 import os
+import secrets
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Lock
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
@@ -32,6 +35,89 @@ MEDIA_HOSTS = (
     "fbcdn.net", "cdninstagram.com", "tiktok.com", "tiktokcdn.com",
     "byteoversea.com", "googlevideo.com", "ytimg.com",
 )
+MEDIA_CACHE_TTL = 20 * 60
+MEDIA_CACHE = {}
+MEDIA_CACHE_LOCK = Lock()
+SAFE_PROXY_HEADERS = {
+    "accept", "accept-language", "origin", "referer", "user-agent",
+    "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site",
+}
+
+
+def clean_proxy_headers(headers):
+    cleaned = {}
+    for name, value in (headers or {}).items():
+        if str(name).lower() not in SAFE_PROXY_HEADERS:
+            continue
+        value = str(value)
+        if "\r" in value or "\n" in value:
+            continue
+        cleaned[str(name)] = value
+    return cleaned
+
+
+def default_proxy_headers(source):
+    referers = {
+        "instagram": "https://www.instagram.com/",
+        "tiktok": "https://www.tiktok.com/",
+        "facebook": "https://www.facebook.com/",
+        "youtube": "https://www.youtube.com/",
+    }
+    return {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": referers.get(source, "https://www.instagram.com/"),
+    }
+
+
+def cache_media(url, headers, source):
+    now = time.monotonic()
+    token = secrets.token_urlsafe(24)
+    entry = {
+        "url": url,
+        "headers": clean_proxy_headers(headers),
+        "source": source,
+        "expires": now + MEDIA_CACHE_TTL,
+    }
+    with MEDIA_CACHE_LOCK:
+        expired = [key for key, item in MEDIA_CACHE.items() if item["expires"] <= now]
+        for key in expired:
+            MEDIA_CACHE.pop(key, None)
+        MEDIA_CACHE[token] = entry
+    return token
+
+
+def get_cached_media(token):
+    now = time.monotonic()
+    with MEDIA_CACHE_LOCK:
+        entry = MEDIA_CACHE.get(token)
+        if not entry or entry["expires"] <= now:
+            MEDIA_CACHE.pop(token, None)
+            return None
+        return {**entry, "headers": dict(entry["headers"])}
+
+
+def prepare_media_response(media):
+    if not media:
+        return media
+
+    items = media.get("items") if isinstance(media.get("items"), list) else []
+    for item in items:
+        if not item or not item.get("url"):
+            continue
+        item["proxy_id"] = cache_media(
+            item["url"], item.get("http_headers"), item.get("source") or media.get("source")
+        )
+        item.pop("http_headers", None)
+
+    if items and media.get("url") == items[0].get("url"):
+        media["proxy_id"] = items[0].get("proxy_id")
+    elif media.get("url"):
+        media["proxy_id"] = cache_media(
+            media["url"], media.get("http_headers"), media.get("source")
+        )
+
+    media.pop("http_headers", None)
+    return media
 
 
 def extract_media(source_url):
@@ -134,7 +220,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
             media, error = extract_media(str(data.get("url", "")).strip())
             if error:
                 return self.respond(422, {"error": error})
-            return self.respond(200, media)
+            return self.respond(200, prepare_media_response(media))
         except Exception:
             return self.respond(422, {"error": "Não foi possível processar esse link agora."})
 
@@ -153,12 +239,37 @@ class WorkerHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(payload).encode("utf-8"))
 
     def proxy_media(self):
-        source_url = parse_qs(urlparse(self.path).query).get("url", [""])[0]
+        query = parse_qs(urlparse(self.path).query)
+        proxy_id = query.get("id", [""])[0]
+        cached = get_cached_media(proxy_id) if proxy_id else None
+
+        if proxy_id:
+            if not cached:
+                return self.respond(410, {"error": "Este link expirou. Analise a publicação novamente."})
+            source_url = cached["url"]
+            source = cached.get("source")
+            headers = default_proxy_headers(source)
+            headers.update(cached.get("headers") or {})
+        else:
+            source_url = query.get("url", [""])[0]
+            parsed = urlparse(source_url)
+            host = parsed.hostname.lower() if parsed.hostname else ""
+            if parsed.scheme != "https" or not any(
+                host == item or host.endswith("." + item) for item in MEDIA_HOSTS
+            ):
+                return self.respond(400, {"error": "Arquivo de mídia não permitido."})
+            source = (
+                "tiktok" if "tiktok" in host or "byte" in host else
+                "facebook" if "fbcdn" in host else
+                "youtube" if "googlevideo" in host or "ytimg" in host else
+                "instagram"
+            )
+            headers = default_proxy_headers(source)
+
         parsed = urlparse(source_url)
-        host = parsed.hostname.lower() if parsed.hostname else ""
-        if parsed.scheme != "https" or not any(host == item or host.endswith("." + item) for item in MEDIA_HOSTS):
+        if parsed.scheme != "https" or not parsed.hostname:
             return self.respond(400, {"error": "Arquivo de mídia não permitido."})
-        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.instagram.com/"}
+
         if self.headers.get("Range"):
             headers["Range"] = self.headers["Range"]
         try:

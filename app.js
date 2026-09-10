@@ -54,7 +54,7 @@ form.addEventListener('submit', async (event) => {
 
 function createPreview(data) {
   const element = document.createElement(data.type === 'image' ? 'img' : data.type === 'video' ? 'video' : 'audio');
-  element.src = proxyMediaUrl(data.url, data.source);
+  element.src = proxyMediaUrl(data.url, data.source, data.proxy_id);
   if (data.type === 'video') {
     element.autoplay = true; element.muted = true; element.loop = true; element.playsInline = true;
     element.controls = false; element.disablePictureInPicture = true;
@@ -68,7 +68,7 @@ function createPreview(data) {
 function renderMedia(data) {
   preview.replaceChildren(createPreview(data));
   carouselItems.hidden = true; carouselItems.replaceChildren();
-  downloadLink.href = '#'; downloadLink.dataset.mediaUrl = proxyMediaUrl(data.url, data.source);
+  downloadLink.href = '#'; downloadLink.dataset.mediaUrl = proxyMediaUrl(data.url, data.source, data.proxy_id);
   downloadLink.dataset.filename = data.filename || 'soft-download';
 }
 
@@ -82,7 +82,7 @@ function renderCarousel(items) {
     const button = document.createElement('button');
     button.type = 'button'; button.className = 'tile-download'; button.textContent = '↓';
     button.title = `Baixar mídia ${index + 1}`; button.setAttribute('aria-label', `Baixar mídia ${index + 1}`);
-    button.addEventListener('click', () => downloadMedia(proxyMediaUrl(item.url, item.source), item.filename || 'soft-download', button));
+    button.addEventListener('click', () => downloadMedia(proxyMediaUrl(item.url, item.source, item.proxy_id), item.filename || 'soft-download', button));
     tile.append(button); grid.append(tile);
   });
   preview.append(grid);
@@ -106,6 +106,8 @@ async function downloadMedia(mediaUrl, filename, button, quiet = false) {
 
 function showError(message) { note.className = 'form-note error'; note.textContent = message; result.hidden = true; }
 
-function proxyMediaUrl(url, source) {
-  return source && source !== 'direct' ? `https://api.forgeaioficial.online/media?url=${encodeURIComponent(url)}` : url;
+function proxyMediaUrl(url, source, proxyId) {
+  if (!source || source === 'direct') return url;
+  if (proxyId) return `https://api.forgeaioficial.online/media?id=${encodeURIComponent(proxyId)}`;
+  return `https://api.forgeaioficial.online/media?url=${encodeURIComponent(url)}`;
 }

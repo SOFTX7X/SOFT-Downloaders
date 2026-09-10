@@ -106,6 +106,7 @@ def normalize_media(info, host):
         "status": "ready", "source": detect_source(host), "type": media_type(info, extension),
         "url": info["url"], "title": title, "thumbnail": info.get("thumbnail"),
         "filename": f"{safe_filename(title)}.{extension}", "media_count": media_count,
+        "http_headers": info.get("http_headers") or {},
     }
 
 
