@@ -25,9 +25,9 @@ class handler(BaseHTTPRequestHandler):
             if parsed.scheme not in ("http", "https") or not any(host == item or host.endswith("." + item) for item in ALLOWED_HOSTS):
                 return self.respond(400, {"error": "Use um link público de Instagram, TikTok, YouTube ou Facebook."})
 
-            worker_url = os.environ.get("SOFT_WORKER_URL", "").rstrip("/")
+            worker_url = os.environ.get("SOFT_WORKER_URL", "https://api.forgeaioficial.online").rstrip("/")
             worker_secret = os.environ.get("SOFT_WORKER_SECRET", "")
-            if worker_url and worker_secret:
+            if worker_url:
                 proxied = request_pc_worker(worker_url, worker_secret, source_url)
                 if proxied:
                     return self.respond(200, proxied)
@@ -139,7 +139,7 @@ def extract_embedded_url(page, field):
 
 
 def request_pc_worker(worker_url, worker_secret, source_url):
-    """Calls the private PC worker only when both Vercel secrets are configured."""
+    """Uses the PC worker; an optional secret can be enabled without changing the client."""
     body = json.dumps({"url": source_url}).encode("utf-8")
     request = Request(
         f"{worker_url}/extract",
