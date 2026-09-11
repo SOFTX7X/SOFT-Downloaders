@@ -191,17 +191,9 @@ function showResultError(message) {
 }
 
 function createPreview(data) {
-  // TikTok e YouTube usam somente a capa na prévia. O arquivo real é
-  // preparado pelo worker apenas quando o usuário pede o download.
-  if (['tiktok', 'youtube'].includes(data.source) && data.type === 'video') {
-    if (!data.thumbnail) return createPreviewUnavailable();
-    const image = document.createElement('img');
-    image.src = data.thumbnail;
-    image.alt = '';
-    image.addEventListener('error', () => image.replaceWith(createPreviewUnavailable()));
-    return image;
-  }
-
+  // Todo item identificado como vídeo usa a mesma prévia inline: autoplay,
+  // sem controles, silenciosa e em loop. A thumbnail fica somente como
+  // poster/fallback enquanto o vídeo carrega ou se a prévia falhar.
   const element = document.createElement(
     data.type === 'image' ? 'img' : data.type === 'video' ? 'video' : 'audio'
   );

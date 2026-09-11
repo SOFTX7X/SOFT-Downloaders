@@ -864,13 +864,84 @@ class WorkerHandler(BaseHTTPRequestHandler):
         info_path = cached.get("info_path")
         filename = cached.get("filename") or "youtube-video.mp4"
 
-        if not download_requested:
-            # A interface usa a thumbnail como prévia do YouTube. Evita baixar e
-            # mesclar vídeo+áudio só para renderizar um preview.
-            return self.respond(415, {"error": "Prévia do YouTube usa a capa do vídeo."})
-
         if not page_url and not (info_path and Path(info_path).is_file()):
             return self.respond(410, {"error": "Este link expirou. Analise o vídeo novamente."})
+
+        if not download_requested:
+            # A prévia não precisa de áudio porque o player fica mutado. Usamos
+            # uma faixa MP4/H.264 leve (até 480p quando disponível) e enviamos
+            # direto ao navegador, sem FFmpeg e sem preparar o download final.
+            preview_selector = (
+                "best[ext=mp4][vcodec^=avc1][height<=480]/"
+                "bestvideo[ext=mp4][vcodec^=avc1][height<=480]/"
+                "bestvideo[ext=mp4][height<=480]/bestvideo[height<=480]/"
+                "best[ext=mp4]/best"
+            )
+            command = [
+                sys.executable, "-m", "yt_dlp",
+                "--quiet", "--no-warnings", "--no-progress", "--no-playlist",
+                "-f", preview_selector,
+                "-o", "-",
+            ]
+            if info_path and Path(info_path).is_file():
+                command.extend(["--load-info-json", info_path])
+            elif page_url:
+                command.append(page_url)
+
+            process = None
+            with tempfile.TemporaryFile(mode="w+b") as error_log:
+                try:
+                    process = subprocess.Popen(
+                        command,
+                        stdout=subprocess.PIPE,
+                        stderr=error_log,
+                        bufsize=0,
+                    )
+                    first_chunk = process.stdout.read(64 * 1024) if process.stdout else b""
+                    if not first_chunk:
+                        return_code = process.wait(timeout=20)
+                        error_log.seek(0)
+                        detail = error_log.read().decode("utf-8", "ignore").strip()
+                        print(f"Falha na prévia YouTube via yt-dlp ({return_code}): {detail[-1600:]}")
+                        return self.respond(502, {"error": "Não foi possível preparar a prévia deste vídeo do YouTube."})
+
+                    self.send_response(200)
+                    origin = self.headers.get("Origin")
+                    if origin in ALLOWED_ORIGINS:
+                        self.send_header("Access-Control-Allow-Origin", origin)
+                    self.send_header("Content-Type", "video/mp4")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.end_headers()
+                    self.wfile.write(first_chunk)
+
+                    while process.stdout:
+                        chunk = process.stdout.read(64 * 1024)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+
+                    return_code = process.wait()
+                    if return_code != 0:
+                        error_log.seek(0)
+                        detail = error_log.read().decode("utf-8", "ignore").strip()
+                        print(f"Prévia YouTube interrompida pelo yt-dlp ({return_code}): {detail[-1600:]}")
+                except (BrokenPipeError, ConnectionResetError):
+                    if process and process.poll() is None:
+                        process.terminate()
+                except Exception as error:
+                    if process and process.poll() is None:
+                        process.terminate()
+                    print(f"Falha no streaming da prévia YouTube: {type(error).__name__}: {error}")
+                    if not self.wfile.closed:
+                        try:
+                            self.respond(502, {"error": "Não foi possível preparar a prévia deste vídeo do YouTube."})
+                        except Exception:
+                            pass
+                finally:
+                    if process and process.poll() is None:
+                        process.kill()
+            return
 
         format_selector = (
             "bestvideo[ext=mp4][vcodec^=avc1][height<=720]+bestaudio[ext=m4a]/"
