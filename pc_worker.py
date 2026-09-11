@@ -1250,9 +1250,10 @@ def _pinterest_resource_pin(pin_id, headers):
 def extract_pinterest_public_media(source_url):
     """Extrai imagens e vídeos de Pins públicos sem sessão do usuário.
 
-    Primeiro usa o recurso público detalhado do Pin. Se o Pinterest mudar ou
-    limitar esse recurso, fazemos fallback para os JSONs SSR/Open Graph da
-    própria página. Links pin.it são resolvidos por redirecionamento normal.
+    O Pinterest às vezes devolve apenas a capa JPG no PinResource mesmo para
+    Pins que são vídeo. Por isso vídeo tem prioridade: resultados somente de
+    imagem ficam guardados como fallback enquanto também inspecionamos o HTML,
+    os JSONs SSR e as URLs MP4 presentes na página.
     """
     from html import unescape as html_unescape
     import re
@@ -1269,9 +1270,37 @@ def extract_pinterest_public_media(source_url):
     page = None
     final_url = source_url
     pin_id = _pinterest_pin_id(source_url)
+    image_fallback = None
 
-    # pin.it não contém o ID. Uma única abertura resolve o redirecionamento e
-    # já deixa o HTML disponível caso seja necessário usar o fallback SSR.
+    def finalize_items(items):
+        unique = []
+        urls = set()
+        for item in items or []:
+            media_url = item.get("url") if isinstance(item, dict) else None
+            if not media_url or media_url in urls:
+                continue
+            urls.add(media_url)
+            unique.append(item)
+        if not unique:
+            return None
+        primary = dict(unique[0])
+        primary["items"] = unique
+        primary["media_count"] = len(unique)
+        return primary
+
+    def has_video(result):
+        if not isinstance(result, dict):
+            return False
+        if result.get("type") == "video":
+            return True
+        return any(
+            isinstance(item, dict) and item.get("type") == "video"
+            for item in (result.get("items") or [])
+        )
+
+    # pin.it não contém o ID. Uma abertura resolve o redirecionamento e já
+    # nos dá o HTML, que é importante porque alguns Pins de vídeo aparecem
+    # como imagem no PinResource.
     if not pin_id:
         page, final_url = _pinterest_fetch_page(source_url, headers)
         final_host = (urlparse(final_url).hostname or "").lower().removeprefix("www.")
@@ -1279,7 +1308,9 @@ def extract_pinterest_public_media(source_url):
             return None
         pin_id = _pinterest_pin_id(final_url)
 
-    # Caminho principal: endpoint público que alimenta a página individual.
+    # PinResource continua sendo a primeira fonte estruturada, mas um retorno
+    # somente com JPG não encerra mais a extração. Guardamos a imagem e ainda
+    # procuramos MP4 na página/SSR antes de decidir que o Pin é foto.
     if pin_id:
         try:
             pin = _pinterest_resource_pin(pin_id, headers)
@@ -1291,19 +1322,11 @@ def extract_pinterest_public_media(source_url):
                     or pin.get("description")
                     or "Mídia do Pinterest"
                 ).strip() or "Mídia do Pinterest"
-                items = _pinterest_items_from_pin(pin, pin_id, title)
-                if items:
-                    unique = []
-                    urls = set()
-                    for item in items:
-                        if item["url"] in urls:
-                            continue
-                        urls.add(item["url"])
-                        unique.append(item)
-                    primary = dict(unique[0])
-                    primary["items"] = unique
-                    primary["media_count"] = len(unique)
-                    return primary
+                result = finalize_items(_pinterest_items_from_pin(pin, pin_id, title))
+                if result:
+                    if has_video(result):
+                        return result
+                    image_fallback = result
         except Exception as error:
             print(f"Pinterest PinResource indisponível: {type(error).__name__}: {error}")
 
@@ -1311,16 +1334,18 @@ def extract_pinterest_public_media(source_url):
         page, final_url = _pinterest_fetch_page(source_url, headers)
 
     if not page:
-        return None
+        return image_fallback
 
     final_host = (urlparse(final_url).hostname or "").lower().removeprefix("www.")
     if not (final_host == "pinterest.com" or final_host.endswith(".pinterest.com")):
-        return None
+        return image_fallback
 
     pin_id = pin_id or _pinterest_pin_id(final_url) or _pinterest_pin_id(source_url)
     fallback_title = _pinterest_meta_value(page, "og:title", "twitter:title") or "Mídia do Pinterest"
 
-    # Fallback: dados iniciais SSR/Relay enviados ao navegador.
+    # Dados iniciais SSR/Relay enviados ao navegador. Há páginas em que um
+    # objeto contém só a capa e outro objeto, mais interno, contém videoData;
+    # por isso também priorizamos qualquer resultado que tenha vídeo.
     script_bodies = re.findall(
         r'<script[^>]+(?:type=["\']application/json["\']|id=["\']__PWS_DATA__["\'])[^>]*>(.*?)</script>',
         page,
@@ -1341,21 +1366,15 @@ def extract_pinterest_public_media(source_url):
             continue
 
         for pin in _pinterest_find_pin_objects(payload, pin_id):
-            items = _pinterest_items_from_pin(pin, pin_id, fallback_title)
-            if items:
-                unique = []
-                urls = set()
-                for item in items:
-                    if item["url"] in urls:
-                        continue
-                    urls.add(item["url"])
-                    unique.append(item)
-                primary = dict(unique[0])
-                primary["items"] = unique
-                primary["media_count"] = len(unique)
-                return primary
+            result = finalize_items(_pinterest_items_from_pin(pin, pin_id, fallback_title))
+            if not result:
+                continue
+            if has_video(result):
+                return result
+            if image_fallback is None:
+                image_fallback = result
 
-    # Último fallback: Open Graph cobre Pins simples de imagem e alguns vídeos.
+    # Open Graph cobre vários Pins de vídeo simples.
     image_url = _pinterest_meta_value(page, "og:image", "twitter:image")
     video_url = _pinterest_meta_value(
         page,
@@ -1365,11 +1384,50 @@ def extract_pinterest_public_media(source_url):
     if video_url and video_url.startswith("https://") and "pinimg.com" in (urlparse(video_url).hostname or "").lower():
         item = _pinterest_make_item("video", video_url, fallback_title, pin_id, 1, image_url)
         item["items"] = [dict(item)]
+        item["media_count"] = 1
         return item
+
+    # Último detector de vídeo: o Pinterest também pode embutir o MP4 como
+    # string JSON escapada, sem colocá-lo nos metadados OG. Normalizamos as
+    # barras escapadas e escolhemos a melhor URL pinimg.com encontrada.
+    normalized_page = html_unescape(page).replace("\\u002F", "/").replace("\\/", "/")
+    raw_video_urls = re.findall(
+        r'https://[^"\'<>\\\s]+?\.mp4(?:\?[^"\'<>\\\s]*)?',
+        normalized_page,
+        flags=re.IGNORECASE,
+    )
+    raw_video_urls = [
+        url for url in raw_video_urls
+        if "pinimg.com" in (urlparse(url).hostname or "").lower()
+    ]
+    if raw_video_urls:
+        # URLs 1080p/720p costumam carregar a qualidade no próprio caminho.
+        def raw_video_score(url):
+            lower = url.lower()
+            if "1080" in lower:
+                return 3
+            if "720" in lower:
+                return 2
+            if "540" in lower or "480" in lower:
+                return 1
+            return 0
+
+        raw_video_urls.sort(key=raw_video_score, reverse=True)
+        item = _pinterest_make_item("video", raw_video_urls[0], fallback_title, pin_id, 1, image_url)
+        item["items"] = [dict(item)]
+        item["media_count"] = 1
+        return item
+
+    # Só agora, depois de esgotar as fontes de vídeo, aceitamos a capa como
+    # foto. Isso evita classificar um Pin de vídeo como imagem apenas porque o
+    # PinResource entregou primeiro o JPG de poster.
+    if image_fallback is not None:
+        return image_fallback
 
     if image_url and image_url.startswith("https://") and "pinimg.com" in (urlparse(image_url).hostname or "").lower():
         item = _pinterest_make_item("image", image_url, fallback_title, pin_id, 1, image_url)
         item["items"] = [dict(item)]
+        item["media_count"] = 1
         return item
 
     return None
