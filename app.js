@@ -17,6 +17,7 @@ const downloadStatus = document.querySelector('#downloadStatus');
 const DEFAULT_NOTE = 'Aceita links diretos para arquivos públicos: MP4, WebM, MP3, JPG, PNG e WebP.';
 
 const WORKER_MEDIA_HOST = 'api.forgeaioficial.online';
+let activeResultItems = [];
 
 function hasWorkerProxy(data) {
   if (!data || !['tiktok', 'youtube'].includes(data.source)) return true;
@@ -37,6 +38,12 @@ document.addEventListener('keydown', (event) => {
 
 downloadLink.addEventListener('click', async (event) => {
   event.preventDefault();
+
+  if (downloadLink.dataset.mode === 'all') {
+    await downloadAllMedia(activeResultItems, downloadLink);
+    return;
+  }
+
   if (downloadLink.dataset.mediaUrl) {
     await downloadMedia(downloadLink.dataset.mediaUrl, downloadLink.dataset.filename, downloadLink);
   }
@@ -92,13 +99,12 @@ form.addEventListener('submit', async (event) => {
 
   const items = Array.isArray(data.items) && data.items.length ? data.items : [data];
   const isCarousel = items.length > 1;
+  activeResultItems = items;
 
   result.classList.toggle('is-carousel', isCarousel);
   resultStage.classList.toggle('carousel-mode', isCarousel);
   if (isCarousel) renderCarousel(items);
   else renderMedia(items[0]);
-
-  downloadLink.hidden = isCarousel;
   resultLoading.hidden = true;
   resultError.hidden = true;
   result.hidden = false;
@@ -129,8 +135,11 @@ function resetResult() {
   delete preview.dataset.type;
   carouselItems.replaceChildren();
   carouselItems.hidden = true;
+  activeResultItems = [];
   downloadLink.hidden = true;
   downloadLink.href = '#';
+  downloadLink.textContent = 'BAIXAR ARQUIVO';
+  delete downloadLink.dataset.mode;
   delete downloadLink.dataset.mediaUrl;
   delete downloadLink.dataset.filename;
   if (downloadStatus) {
@@ -225,6 +234,8 @@ function renderMedia(data) {
   carouselItems.replaceChildren();
   downloadLink.hidden = false;
   downloadLink.href = '#';
+  downloadLink.textContent = downloadLabelForType(data.type);
+  downloadLink.dataset.mode = 'single';
   downloadLink.dataset.mediaUrl = proxyMediaUrl(data.url, data.source, data.proxy_id, true);
   downloadLink.dataset.filename = data.filename || 'soft-download';
 }
@@ -260,6 +271,60 @@ function renderCarousel(items) {
   });
 
   preview.append(grid);
+
+  downloadLink.hidden = false;
+  downloadLink.href = '#';
+  downloadLink.textContent = 'BAIXAR TODOS';
+  downloadLink.dataset.mode = 'all';
+  delete downloadLink.dataset.mediaUrl;
+  delete downloadLink.dataset.filename;
+}
+
+function downloadLabelForType(type) {
+  if (type === 'image') return 'BAIXAR FOTO';
+  if (type === 'video') return 'BAIXAR VÍDEO';
+  if (type === 'audio') return 'BAIXAR ÁUDIO';
+  return 'BAIXAR ARQUIVO';
+}
+
+async function downloadAllMedia(items, button) {
+  if (!Array.isArray(items) || items.length < 2) return;
+
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = 'PREPARANDO…';
+  showDownloadStatus(`Preparando ${items.length} arquivos…`);
+
+  try {
+    let started = 0;
+    for (const item of items) {
+      const mediaUrl = proxyMediaUrl(item.url, item.source, item.proxy_id, true);
+      if (!mediaUrl) continue;
+
+      // Dispara cada arquivo com um pequeno intervalo para não sobrecarregar
+      // o worker nem o navegador com todas as requisições no mesmo instante.
+      const transferFrame = document.createElement('iframe');
+      transferFrame.hidden = true;
+      transferFrame.setAttribute('aria-hidden', 'true');
+      transferFrame.src = mediaUrl;
+      document.body.append(transferFrame);
+      window.setTimeout(() => transferFrame.remove(), 120000);
+      started += 1;
+
+      await new Promise((resolve) => window.setTimeout(resolve, 650));
+    }
+
+    if (!started) throw new Error('Não foi possível preparar os arquivos.');
+    showDownloadStatus(started === items.length
+      ? 'Downloads enviados ao navegador.'
+      : `${started} de ${items.length} downloads foram enviados ao navegador.`);
+    window.setTimeout(hideDownloadStatus, 5000);
+  } catch (error) {
+    showDownloadStatus(error.message || 'Não foi possível iniciar os downloads.', true);
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
 }
 
 async function downloadMedia(mediaUrl, filename, button) {
