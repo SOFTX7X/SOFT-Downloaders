@@ -372,9 +372,80 @@ def extract_media(source_url):
         media["_tiktok_cookiefile"] = tiktok_cookiefile
     return media, None
 
+def normalize_youtube_media(info, host):
+    """YouTube sempre representa vídeo; thumbnail é apenas a capa da prévia.
+
+    O yt-dlp pode devolver metadados sem ``url`` no nível principal quando a
+    seleção padrão aponta para streams separados. Para o fluxo por proxy do
+    SOFT Downloaders, preferimos o melhor formato progressivo (vídeo + áudio)
+    e nunca promovemos a thumbnail para arquivo baixável.
+    """
+    if not info:
+        return None
+
+    raw_items = info.get("entries") if info.get("entries") else [info]
+    for entry in raw_items:
+        if not entry:
+            continue
+
+        # Se o yt-dlp já escolheu um arquivo de vídeo completo, use-o.
+        if entry.get("url") and str(entry.get("vcodec") or "none").lower() != "none":
+            item = normalize_media(entry, host)
+            if item and item.get("type") == "video":
+                return item
+
+        candidates = []
+        for fmt in entry.get("formats") or []:
+            if not isinstance(fmt, dict) or not fmt.get("url"):
+                continue
+            vcodec = str(fmt.get("vcodec") or "none").lower()
+            acodec = str(fmt.get("acodec") or "none").lower()
+            if vcodec == "none" or acodec == "none":
+                continue
+
+            ext = str(fmt.get("ext") or "").lower()
+            height = int(fmt.get("height") or 0)
+            tbr = float(fmt.get("tbr") or 0)
+            # MP4 tem a melhor compatibilidade para preview/download no navegador.
+            candidates.append((1 if ext == "mp4" else 0, height, tbr, fmt))
+
+        if not candidates:
+            continue
+
+        candidates.sort(key=lambda item: item[:3], reverse=True)
+        selected_format = candidates[0][3]
+        selected = dict(entry)
+        selected.update(selected_format)
+        selected["thumbnail"] = entry.get("thumbnail")
+        selected["title"] = entry.get("title") or "Vídeo do YouTube"
+        selected["http_headers"] = (
+            selected_format.get("http_headers")
+            or entry.get("http_headers")
+            or {}
+        )
+        item = normalize_media(selected, host)
+        if item:
+            item["source"] = "youtube"
+            item["type"] = "video"
+            return item
+
+    return None
+
+
 def normalize_carousel_media(info, host):
     if not info:
         return None
+
+    # YouTube não possui "imagem para baixar" neste produto. A thumbnail é
+    # somente capa; a mídia principal deve ser sempre um vídeo.
+    if "youtube" in host or host == "youtu.be":
+        item = normalize_youtube_media(info, host)
+        if not item:
+            return None
+        primary = dict(item)
+        primary["items"] = [item]
+        primary["media_count"] = 1
+        return primary
 
     raw_items = info.get("entries") if info.get("entries") else [info]
     items = []
@@ -383,7 +454,7 @@ def normalize_carousel_media(info, host):
             continue
         if entry.get("url"):
             item = normalize_media(entry, host)
-        elif entry.get("thumbnail"):
+        elif entry.get("thumbnail") and "instagram" in host:
             item = {
                 "status": "ready", "source": "instagram", "type": "image",
                 "url": entry["thumbnail"], "thumbnail": entry["thumbnail"],
