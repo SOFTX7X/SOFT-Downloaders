@@ -446,6 +446,64 @@ def normalize_youtube_media(info, host):
     return None
 
 
+def select_instagram_video_format(entry):
+    """Retorna a melhor URL de vídeo quando o Instagram só expõe a capa no nível principal."""
+    candidates = []
+    for fmt in entry.get("formats") or []:
+        if not isinstance(fmt, dict) or not fmt.get("url"):
+            continue
+        vcodec = str(fmt.get("vcodec") or "none").lower()
+        if vcodec == "none":
+            continue
+        acodec = str(fmt.get("acodec") or "none").lower()
+        ext = str(fmt.get("ext") or "").lower()
+        height = fmt.get("height") or 0
+        tbr = fmt.get("tbr") or 0
+        score = (
+            1 if acodec != "none" else 0,
+            1 if ext == "mp4" else 0,
+            1 if vcodec.startswith(("h264", "avc")) else 0,
+            height,
+            tbr,
+        )
+        candidates.append((score, fmt))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def normalize_instagram_entry(entry, host, index):
+    # Reels podem vir sem entry["url"] e trazer apenas thumbnail + formats.
+    # Antes de assumir que é foto, procuramos uma mídia de vídeo real.
+    video_format = select_instagram_video_format(entry)
+    if video_format:
+        video_info = dict(entry)
+        video_info.update({
+            "url": video_format["url"],
+            "ext": video_format.get("ext") or entry.get("ext") or "mp4",
+            "vcodec": video_format.get("vcodec") or entry.get("vcodec") or "h264",
+            "acodec": video_format.get("acodec") or entry.get("acodec"),
+            "http_headers": video_format.get("http_headers") or entry.get("http_headers") or {},
+        })
+        item = normalize_media(video_info, host)
+        if item:
+            item["type"] = "video"
+            return item
+
+    if entry.get("url"):
+        return normalize_media(entry, host)
+
+    if entry.get("thumbnail"):
+        return {
+            "status": "ready", "source": "instagram", "type": "image",
+            "url": entry["thumbnail"], "thumbnail": entry["thumbnail"],
+            "title": entry.get("title") or f"Imagem {index}",
+            "filename": f"instagram-{entry.get('id') or index}.jpg", "media_count": 1,
+        }
+    return None
+
+
 def normalize_carousel_media(info, host):
     if not info:
         return None
@@ -466,15 +524,10 @@ def normalize_carousel_media(info, host):
     for index, entry in enumerate(raw_items, start=1):
         if not entry:
             continue
-        if entry.get("url"):
+        if "instagram" in host:
+            item = normalize_instagram_entry(entry, host, index)
+        elif entry.get("url"):
             item = normalize_media(entry, host)
-        elif entry.get("thumbnail") and "instagram" in host:
-            item = {
-                "status": "ready", "source": "instagram", "type": "image",
-                "url": entry["thumbnail"], "thumbnail": entry["thumbnail"],
-                "title": entry.get("title") or f"Imagem {index}",
-                "filename": f"instagram-{entry.get('id') or index}.jpg", "media_count": 1,
-            }
         else:
             item = None
         if item and item.get("url"):
