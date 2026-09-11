@@ -1169,7 +1169,11 @@ def _pinterest_items_from_pin(pin, pin_id, fallback_title):
                 if not isinstance(page, dict):
                     continue
                 poster = _pinterest_image_from_node(page)
-                video = _pinterest_best_video(page)
+                # Story/Idea Pins costumam esconder o MP4 dentro de
+                # blocks[].videoData; a busca precisa ser recursiva aqui
+                # também. Usar apenas _pinterest_best_video(page) fazia
+                # esses Pins caírem na thumbnail e serem marcados como foto.
+                video = _pinterest_video_from_node(page)
                 if video:
                     items.append(_pinterest_make_item("video", video, title, pin_id, index, poster))
                 elif poster:
