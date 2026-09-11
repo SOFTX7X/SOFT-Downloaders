@@ -238,57 +238,75 @@ def prepare_media_response(media, source_url):
     media.pop("http_headers", None)
     return media
 
-def extract_tiktok_with_session(source_url):
-    """Extrai TikTok reutilizando a sessão de desafio entre requisições.
+def extract_tiktok_fast(source_url):
+    """Primeira tentativa do TikTok com sessão isolada e curta.
 
-    O TikTok pode falhar de forma intermitente quando cada análise começa com
-    um cookie jar vazio. O worker mantém um jar próprio (sem cookies do usuário)
-    e faz tentativas internas antes de devolver erro ao site. Para o download,
-    criamos uma cópia isolada dos cookies usados na análise bem-sucedida.
+    Evita serializar todas as análises no cookie jar compartilhado. Se a
+    publicação abrir normalmente, já devolvemos os metadados e os cookies
+    dessa própria tentativa para o download posterior via info-json.
     """
-    last_error = None
+    cookiefile = RUNTIME_CACHE_DIR / f"fast-{secrets.token_urlsafe(18)}.cookies.txt"
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": False,
+        "skip_download": True,
+        "ignoreerrors": False,
+        "ignore_no_formats_error": False,
+        "socket_timeout": 12,
+        "impersonate": ImpersonateTarget.from_str("chrome"),
+        "cookiefile": str(cookiefile),
+    }
+    try:
+        with YoutubeDL(options) as extractor:
+            info = extractor.extract_info(source_url, download=False)
+            sanitized = extractor.sanitize_info(info) if info else None
+        if info:
+            return info, sanitized, str(cookiefile) if cookiefile.is_file() else None
+    except Exception as error:
+        print(f"Falha na análise rápida do TikTok: {type(error).__name__}: {error}")
 
-    # O YoutubeDL grava no cookiefile. Como o worker é multi-thread, duas
-    # análises simultâneas não devem disputar o mesmo arquivo.
+    try:
+        cookiefile.unlink(missing_ok=True)
+    except Exception:
+        pass
+    return None, None, None
+
+
+def extract_tiktok_with_session(source_url):
+    """Fallback do TikTok com o cookie jar persistente do worker.
+
+    Só roda quando a tentativa rápida falha. Uma única tentativa evita o
+    antigo efeito de 3 extrações pesadas em sequência (dezenas de segundos).
+    """
     with TIKTOK_EXTRACT_LOCK:
-        for attempt in range(3):
-            options = {
-                "quiet": True,
-                "no_warnings": True,
-                "noplaylist": False,
-                "skip_download": True,
-                "ignoreerrors": False,
-                "ignore_no_formats_error": False,
-                "socket_timeout": 30,
-                "impersonate": ImpersonateTarget.from_str("chrome"),
-                "cookiefile": str(TIKTOK_SESSION_COOKIEFILE),
-            }
-            try:
-                with YoutubeDL(options) as extractor:
-                    info = extractor.extract_info(source_url, download=False)
-                    sanitized = extractor.sanitize_info(info) if info else None
-                if info:
-                    cookie_snapshot = RUNTIME_CACHE_DIR / (
-                        f"extract-{secrets.token_urlsafe(18)}.cookies.txt"
-                    )
-                    if TIKTOK_SESSION_COOKIEFILE.is_file():
-                        shutil.copy2(TIKTOK_SESSION_COOKIEFILE, cookie_snapshot)
-                        cookie_snapshot_value = str(cookie_snapshot)
-                    else:
-                        cookie_snapshot_value = None
-                    return info, sanitized, cookie_snapshot_value
-            except Exception as error:
-                last_error = error
-                print(
-                    f"Falha na análise TikTok ({attempt + 1}/3): "
-                    f"{type(error).__name__}: {error}"
+        options = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": False,
+            "skip_download": True,
+            "ignoreerrors": False,
+            "ignore_no_formats_error": False,
+            "socket_timeout": 18,
+            "impersonate": ImpersonateTarget.from_str("chrome"),
+            "cookiefile": str(TIKTOK_SESSION_COOKIEFILE),
+        }
+        try:
+            with YoutubeDL(options) as extractor:
+                info = extractor.extract_info(source_url, download=False)
+                sanitized = extractor.sanitize_info(info) if info else None
+            if info:
+                cookie_snapshot = RUNTIME_CACHE_DIR / (
+                    f"extract-{secrets.token_urlsafe(18)}.cookies.txt"
                 )
-
-            if attempt < 2:
-                time.sleep(0.8 * (attempt + 1))
-
-    if last_error:
-        print(f"TikTok não estabilizou após 3 tentativas: {type(last_error).__name__}: {last_error}")
+                if TIKTOK_SESSION_COOKIEFILE.is_file():
+                    shutil.copy2(TIKTOK_SESSION_COOKIEFILE, cookie_snapshot)
+                    cookie_snapshot_value = str(cookie_snapshot)
+                else:
+                    cookie_snapshot_value = None
+                return info, sanitized, cookie_snapshot_value
+        except Exception as error:
+            print(f"Falha no fallback de sessão TikTok: {type(error).__name__}: {error}")
     return None, None, None
 
 
@@ -305,7 +323,9 @@ def extract_media(source_url):
     tiktok_info = None
 
     if is_tiktok and curl_requests is not None:
-        info, tiktok_info, tiktok_cookiefile = extract_tiktok_with_session(source_url)
+        info, tiktok_info, tiktok_cookiefile = extract_tiktok_fast(source_url)
+        if not info:
+            info, tiktok_info, tiktok_cookiefile = extract_tiktok_with_session(source_url)
         media = normalize_carousel_media(info, host) if info else None
     else:
         options = {

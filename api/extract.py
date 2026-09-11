@@ -1,7 +1,6 @@
 import json
 import os
 import re
-import time
 from html import unescape
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
@@ -33,14 +32,13 @@ class handler(BaseHTTPRequestHandler):
                 proxied = request_pc_worker(worker_url, worker_secret, source_url)
                 if proxied:
                     return self.respond(200, proxied)
-                # No TikTok, uma resposta sem proxy_id deixa apenas uma URL
-                # temporária do CDN. Ela pode carregar a prévia e falhar com
-                # 403/502 no download. Se o worker não responder, falhamos
-                # dentro do site em vez de devolver esse fallback instável.
-                if "tiktok" in host:
-                    return self.respond(503, {
-                        "error": "Não foi possível preparar este vídeo agora. Tente analisar novamente."
-                    })
+                # O PC worker é a fonte completa das plataformas sociais. Não
+                # caímos no extrator antigo da Vercel quando ele oscila, porque
+                # esse caminho podia reduzir carrosséis do Instagram à 1ª mídia
+                # e multiplicar o tempo de espera com uma segunda extração.
+                return self.respond(503, {
+                    "error": "Não foi possível analisar esta publicação agora. Tente novamente em instantes."
+                })
 
             options = {
                 "quiet": True,
@@ -179,28 +177,25 @@ def extract_embedded_url(page, field):
 
 
 def request_pc_worker(worker_url, worker_secret, source_url):
-    """Uses the PC worker and retries once for transient tunnel/TikTok failures."""
+    """Consulta o PC worker uma vez; retries das fontes ficam dentro dele."""
     body = json.dumps({"url": source_url}).encode("utf-8")
-    for attempt in range(2):
-        request = Request(
-            f"{worker_url}/extract",
-            data=body,
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "X-Soft-Worker-Key": worker_secret,
-                "User-Agent": "SOFT-Downloaders/1.0",
-            },
-        )
-        try:
-            with urlopen(request, timeout=35) as response:
-                data = json.loads(response.read().decode("utf-8"))
-            if data.get("status") == "ready" and data.get("url"):
-                return data
-        except Exception:
-            pass
-        if attempt == 0:
-            time.sleep(0.7)
+    request = Request(
+        f"{worker_url}/extract",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Soft-Worker-Key": worker_secret,
+            "User-Agent": "SOFT-Downloaders/1.0",
+        },
+    )
+    try:
+        with urlopen(request, timeout=35) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        if data.get("status") == "ready" and data.get("url"):
+            return data
+    except Exception:
+        pass
     return None
 
 
