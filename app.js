@@ -152,6 +152,18 @@ function showResultError(message) {
 }
 
 function createPreview(data) {
+  // TikTok: use somente a capa na prévia. As URLs temporárias de vídeo do
+  // TikTok são mais instáveis no navegador e não precisam participar do
+  // download, que continua sendo feito pelo worker via proxy_id.
+  if (data.source === 'tiktok' && data.type === 'video') {
+    if (!data.thumbnail) return createPreviewUnavailable();
+    const image = document.createElement('img');
+    image.src = data.thumbnail;
+    image.alt = '';
+    image.addEventListener('error', () => image.replaceWith(createPreviewUnavailable()));
+    return image;
+  }
+
   const element = document.createElement(
     data.type === 'image' ? 'img' : data.type === 'video' ? 'video' : 'audio'
   );
