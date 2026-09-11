@@ -131,12 +131,20 @@ def cache_media(
     tiktok_info=None,
     tiktok_cookiefile=None,
     youtube_info=None,
+    instagram_info=None,
+    item_index=None,
+    media_type=None,
 ):
     now = time.monotonic()
     token = secrets.token_urlsafe(24)
     info_path = None
 
-    info_payload = tiktok_info if source == "tiktok" else youtube_info if source == "youtube" else None
+    info_payload = (
+        tiktok_info if source == "tiktok" else
+        youtube_info if source == "youtube" else
+        instagram_info if source == "instagram" else
+        None
+    )
     if info_payload:
         try:
             info_path = RUNTIME_CACHE_DIR / f"{token}.info.json"
@@ -156,6 +164,8 @@ def cache_media(
         "filename": filename,
         "info_path": str(info_path) if info_path else None,
         "cookiefile": tiktok_cookiefile if source == "tiktok" else None,
+        "item_index": item_index,
+        "media_type": media_type,
         "expires": now + MEDIA_CACHE_TTL,
     }
     with MEDIA_CACHE_LOCK:
@@ -220,21 +230,26 @@ def prepare_media_response(media, source_url):
     tiktok_cache_used = False
     youtube_cache_used = False
 
-    for item in items:
+    for item_index, item in enumerate(items, start=1):
         if not item or not item.get("url"):
             continue
         item_source = item.get("source") or media.get("source")
         use_tiktok_bundle = item_source == "tiktok" and not tiktok_cache_used
         use_youtube_bundle = item_source == "youtube" and not youtube_cache_used
+        instagram_info = item.pop("_instagram_info", None) if item_source == "instagram" else None
+        instagram_index = item.pop("_instagram_index", item_index) if item_source == "instagram" else None
         item["proxy_id"] = cache_media(
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
             youtube_info=youtube_info if use_youtube_bundle else None,
+            instagram_info=instagram_info,
+            item_index=instagram_index,
+            media_type=item.get("type"),
         )
         if use_tiktok_bundle:
             tiktok_cache_used = True
@@ -252,11 +267,14 @@ def prepare_media_response(media, source_url):
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
             youtube_info=youtube_info if use_youtube_bundle else None,
+            instagram_info=media.pop("_instagram_info", None) if media_source == "instagram" else None,
+            item_index=media.pop("_instagram_index", 1) if media_source == "instagram" else None,
+            media_type=media.get("type"),
         )
         if use_tiktok_bundle:
             tiktok_cache_used = True
@@ -271,6 +289,8 @@ def prepare_media_response(media, source_url):
             pass
 
     media.pop("http_headers", None)
+    media.pop("_instagram_info", None)
+    media.pop("_instagram_index", None)
     return media
 
 def extract_tiktok_fast(source_url):
@@ -355,6 +375,7 @@ def extract_media(source_url):
 
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
+    is_instagram = "instagram" in host
     tiktok_cookiefile = None
     tiktok_info = None
     youtube_info = None
@@ -380,7 +401,8 @@ def extract_media(source_url):
                 info = extractor.extract_info(source_url, download=False)
                 if is_youtube and info:
                     youtube_info = extractor.sanitize_info(info)
-            media = normalize_carousel_media(info, host)
+                instagram_info = extractor.sanitize_info(info) if is_instagram and info else None
+            media = normalize_carousel_media(info, host, instagram_info)
         except Exception as error:
             if is_youtube:
                 print(f"Falha na análise do YouTube: {type(error).__name__}: {error}")
@@ -526,7 +548,7 @@ def normalize_instagram_entry(entry, host, index):
     return None
 
 
-def normalize_carousel_media(info, host):
+def normalize_carousel_media(info, host, sanitized_info=None):
     if not info:
         return None
 
@@ -542,12 +564,21 @@ def normalize_carousel_media(info, host):
         return primary
 
     raw_items = info.get("entries") if info.get("entries") else [info]
+    safe_items = []
+    if sanitized_info:
+        safe_items = sanitized_info.get("entries") if sanitized_info.get("entries") else [sanitized_info]
+
     items = []
     for index, entry in enumerate(raw_items, start=1):
         if not entry:
             continue
         if "instagram" in host:
             item = normalize_instagram_entry(entry, host, index)
+            if item and item.get("type") == "video":
+                safe_entry = safe_items[index - 1] if index - 1 < len(safe_items) else None
+                if safe_entry:
+                    item["_instagram_info"] = safe_entry
+                item["_instagram_index"] = index
         elif entry.get("url"):
             item = normalize_media(entry, host)
         else:
@@ -648,6 +679,17 @@ class WorkerHandler(BaseHTTPRequestHandler):
         if source == "youtube" and cached:
             return self.proxy_youtube_with_ytdlp(cached, download_requested)
 
+        # A prévia do Instagram continua usando a URL direta para ser rápida.
+        # No download final de vídeo, usamos o yt-dlp + FFmpeg para preferir um
+        # MP4 que já tenha áudio ou juntar vídeo + áudio quando vierem separados.
+        if (
+            source == "instagram"
+            and cached
+            and download_requested
+            and cached.get("media_type") == "video"
+        ):
+            return self.proxy_instagram_with_ytdlp(cached)
+
         requested_range = self.headers.get("Range")
         if requested_range:
             headers["Range"] = requested_range
@@ -730,6 +772,92 @@ class WorkerHandler(BaseHTTPRequestHandler):
         except Exception as error:
             print(f"Falha no proxy {source or 'desconhecido'} via urllib: {type(error).__name__}: {error}")
             self.respond(502, {"error": "Não foi possível preparar este arquivo."})
+
+    def proxy_instagram_with_ytdlp(self, cached):
+        page_url = cached.get("page_url")
+        info_path = cached.get("info_path")
+        item_index = cached.get("item_index") or 1
+        filename = cached.get("filename") or "instagram-video.mp4"
+        filename = str(Path(filename).with_suffix(".mp4"))
+
+        if not page_url and not (info_path and Path(info_path).is_file()):
+            return self.respond(410, {"error": "Este link expirou. Analise a publicação novamente."})
+
+        # Preferimos MP4 completo quando o Instagram oferece uma faixa
+        # progressiva. Caso vídeo e áudio venham separados, o FFmpeg faz a
+        # junção para entregar um MP4 padrão (H.264/AAC quando disponível).
+        format_selector = (
+            "best[ext=mp4][vcodec!=none][acodec!=none]/"
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo[ext=mp4]+bestaudio/"
+            "bestvideo+bestaudio/"
+            "best[ext=mp4]/best"
+        )
+
+        with tempfile.TemporaryDirectory(prefix="soft-instagram-") as temp_dir:
+            output_template = str(Path(temp_dir) / "download.%(ext)s")
+
+            def run_download(use_info_json):
+                command = [
+                    sys.executable, "-m", "yt_dlp",
+                    "--quiet", "--no-warnings", "--no-progress",
+                    "-f", format_selector,
+                    "--merge-output-format", "mp4",
+                    "-o", output_template,
+                ]
+                if use_info_json and info_path and Path(info_path).is_file():
+                    command.extend(["--load-info-json", info_path])
+                elif page_url:
+                    # Em carrosséis, baixa somente o item cujo botão foi usado.
+                    command.extend(["--playlist-items", str(item_index), page_url])
+                else:
+                    return None
+                return subprocess.run(
+                    command,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+
+            result = run_download(True)
+            if result is None or result.returncode != 0:
+                detail = (result.stderr if result else "").strip()
+                if detail:
+                    print(f"Falha no download Instagram via info-json: {detail[-1600:]}")
+                # URLs temporárias do info-json podem expirar. Fazemos só uma
+                # extração nova da publicação como fallback.
+                result = run_download(False)
+
+            if result is None or result.returncode != 0:
+                detail = (result.stderr if result else "").strip()
+                print(f"Falha no download Instagram via yt-dlp: {detail[-1600:]}")
+                return self.respond(502, {"error": "Não foi possível preparar este vídeo do Instagram."})
+
+            files = [
+                path for path in Path(temp_dir).iterdir()
+                if path.is_file() and path.suffix.lower() in (".mp4", ".m4v", ".mov")
+            ]
+            if not files:
+                return self.respond(502, {"error": "Não foi possível preparar este vídeo do Instagram."})
+            media_file = max(files, key=lambda path: path.stat().st_size)
+
+            self.send_response(200)
+            origin = self.headers.get("Origin")
+            if origin in ALLOWED_ORIGINS:
+                self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(media_file.stat().st_size))
+            self.send_header("Content-Disposition", content_disposition(filename))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+
+            try:
+                with media_file.open("rb") as stream:
+                    while chunk := stream.read(64 * 1024):
+                        self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def proxy_youtube_with_ytdlp(self, cached, download_requested=False):
         page_url = cached.get("page_url") or cached.get("url")
