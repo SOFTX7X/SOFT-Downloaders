@@ -8,10 +8,24 @@ nav { display:flex; gap:28px; } nav a { color:var(--muted); text-decoration:none
 .hero { max-width:920px; padding:110px 28px 96px; margin:auto; text-align:center; }.eyebrow { margin:0 0 14px; color:var(--violet); font-size:12px; font-weight:800; letter-spacing:1.1px; }
 h1,h2 { margin:0; font-family:"Manrope",sans-serif; letter-spacing:-2.2px; } h1 { font-size:clamp(42px,6vw,72px); line-height:1.02; } .hero h1{white-space:nowrap;} h2{font-size:clamp(27px,4vw,42px);line-height:1.08}.hero-copy { max-width:565px; margin:22px auto 27px; color:var(--muted); font-size:17px; line-height:1.6; }
 .media-types { display:flex; justify-content:center; flex-wrap:wrap; gap:8px; margin-bottom:28px; }.media-types span { border:1px solid var(--line); border-radius:999px; padding:8px 13px; font-size:13px; font-weight:700; }
-.download-form { max-width:760px; margin:auto; padding:7px; display:grid; grid-template-columns:1fr auto auto; align-items:center; border:1px solid var(--ink); border-radius:13px; background:#fff; box-shadow:0 12px 26px rgba(23,33,42,.06); }.download-form input { min-width:0; border:0; outline:0; padding:13px 14px; color:var(--ink); font:500 15px "DM Sans",sans-serif; }.download-form input::placeholder { color:#91a0a4; }.paste-button,.download-button { border:0; border-radius:8px; padding:13px 17px; font:700 14px "DM Sans",sans-serif; cursor:pointer; }.paste-button { background:transparent; color:var(--muted); }.download-button { background:var(--ink); color:white; }.download-button:hover{background:var(--violet)}
+.download-form { max-width:760px; margin:auto; padding:7px; display:grid; grid-template-columns:1fr auto auto; align-items:center; border:1px solid var(--ink); border-radius:13px; background:#fff; box-shadow:0 12px 26px rgba(23,33,42,.06); }.download-form input { min-width:0; border:0; outline:0; padding:13px 14px; color:var(--ink); font:500 15px "DM Sans",sans-serif; }.download-form input::placeholder { color:#91a0a4; }.paste-button,.clear-button,.download-button { border:0; border-radius:8px; padding:13px 17px; font:700 14px "DM Sans",sans-serif; cursor:pointer; }.paste-button { background:transparent; color:var(--muted); }.clear-button{display:none;background:transparent;color:var(--muted);font-size:22px;line-height:1;padding:0}.clear-button[hidden]{display:none!important}.download-button { background:var(--ink); color:white; }.download-button:hover{background:var(--violet)}
 .form-note { margin:13px 0 0; color:var(--muted); font-size:12px; }.form-note.error{color:#bc2d3c}.form-note.success{color:#27804e}
 .steps,.formats,.faq { max-width:1124px; padding:88px 28px; margin:auto; border-top:1px solid var(--line); }.steps ol { display:grid; grid-template-columns:repeat(3,1fr); gap:25px; padding:30px 0 0; margin:0; list-style:none; }.steps li{display:grid;gap:16px;color:var(--muted);line-height:1.5}.steps strong{color:var(--violet);font:800 22px "Manrope",sans-serif}.formats{background:var(--surface);max-width:none;padding-left:max(28px,calc((100% - 1068px)/2));padding-right:max(28px,calc((100% - 1068px)/2))}.formats p{max-width:600px;color:var(--muted);line-height:1.6;font-size:17px}.faq{padding-bottom:104px}.faq details{max-width:680px;border-bottom:1px solid var(--line);padding:21px 0}.faq summary{cursor:pointer;font-weight:700}.faq details p{color:var(--muted);line-height:1.55;margin:12px 0 0}footer{padding:29px 28px;text-align:center;border-top:1px solid var(--line);color:var(--muted);font-size:13px}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
-@media (max-width:640px){.site-header{padding:0 20px;min-height:66px}.site-header nav{display:none}.hero{padding:76px 20px 66px}.download-form{grid-template-columns:1fr auto}.paste-button{display:none}.download-button{margin-right:0}.download-form input{padding-left:10px}.steps,.formats,.faq{padding:66px 20px}.steps ol{grid-template-columns:1fr;gap:25px}.hero h1{white-space:normal;font-size:clamp(38px,12vw,54px)}}
+@media (max-width:640px){
+  .site-header{padding:0 20px;min-height:66px}.site-header nav{display:none}
+  .hero{padding:58px 20px 54px}
+  .hero h1{white-space:nowrap;font-size:clamp(28px,8.1vw,34px);letter-spacing:-1.5px}
+  .hero-copy{margin-top:18px;margin-bottom:22px;font-size:16px}
+  .media-types{margin-bottom:22px}
+  .download-form{max-width:560px;padding:0;border:0;border-radius:0;box-shadow:none;background:transparent;grid-template-columns:minmax(0,1fr) 46px;gap:10px 0}
+  .download-form input{width:100%;padding:14px 13px;border:1px solid var(--ink);border-radius:13px 0 0 13px;background:#fff}
+  .paste-button{display:none}
+  .clear-button{display:grid;place-items:center;border:1px solid var(--ink);border-left:0;border-radius:0 13px 13px 0;background:#fff;color:var(--muted)}
+  .clear-button:hover{color:var(--ink)}
+  .download-button{grid-column:1 / -1;justify-self:center;min-width:154px;margin:0;padding:13px 24px}
+  .form-note{margin-top:11px}
+  .steps,.formats,.faq{padding:66px 20px}.steps ol{grid-template-columns:1fr;gap:25px}
+}
 /* Segunda tela de análise e resultado */
 body.result-screen-open{overflow:hidden}
 .result-screen{position:fixed;inset:0;z-index:1000;background:#fff;overflow:auto}

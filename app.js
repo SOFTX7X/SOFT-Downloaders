@@ -1,6 +1,7 @@
 const form = document.querySelector('#downloadForm');
 const input = document.querySelector('#mediaUrl');
 const note = document.querySelector('#formNote');
+const clearButton = document.querySelector('#clearButton');
 const resultScreen = document.querySelector('#resultScreen');
 const resultBack = document.querySelector('#resultBack');
 const resultLoading = document.querySelector('#resultLoading');
@@ -27,9 +28,31 @@ function hasWorkerProxy(data) {
 }
 
 document.querySelector('#year').textContent = new Date().getFullYear();
+function syncClearButton() {
+  if (clearButton) clearButton.hidden = !input.value.trim();
+}
+
+input.addEventListener('input', syncClearButton);
+
 document.querySelector('#pasteButton').addEventListener('click', async () => {
-  try { input.value = await navigator.clipboard.readText(); input.focus(); } catch { input.focus(); }
+  try {
+    input.value = await navigator.clipboard.readText();
+    syncClearButton();
+    input.focus();
+  } catch {
+    input.focus();
+  }
 });
+
+if (clearButton) {
+  clearButton.addEventListener('click', () => {
+    input.value = '';
+    syncClearButton();
+    input.focus();
+  });
+}
+
+syncClearButton();
 
 resultBack.addEventListener('click', closeResultScreen);
 document.addEventListener('keydown', (event) => {
@@ -54,6 +77,7 @@ form.addEventListener('submit', async (event) => {
   const rawUrl = input.value.trim();
   if (!rawUrl) return showFormError('Cole um link para analisar.');
 
+  input.blur();
   openResultScreen('Analisando o link…');
   note.className = 'form-note';
   note.textContent = DEFAULT_NOTE;
@@ -122,8 +146,9 @@ function closeResultScreen() {
   resultScreen.hidden = true;
   document.body.classList.remove('result-screen-open');
   resetResult();
-  input.focus({ preventScroll: true });
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 }
+
 
 function resetResult() {
   result.hidden = true;
