@@ -132,6 +132,7 @@ def cache_media(
     tiktok_cookiefile=None,
     youtube_info=None,
     instagram_info=None,
+    facebook_info=None,
     item_index=None,
     media_type=None,
 ):
@@ -143,6 +144,7 @@ def cache_media(
         tiktok_info if source == "tiktok" else
         youtube_info if source == "youtube" else
         instagram_info if source == "instagram" else
+        facebook_info if source == "facebook" else
         None
     )
     if info_payload:
@@ -226,6 +228,7 @@ def prepare_media_response(media, source_url):
     tiktok_info = media.pop("_tiktok_info", None)
     tiktok_cookiefile = media.pop("_tiktok_cookiefile", None)
     youtube_info = media.pop("_youtube_info", None)
+    facebook_info = media.pop("_facebook_info", None)
     items = media.get("items") if isinstance(media.get("items"), list) else []
     tiktok_cache_used = False
     youtube_cache_used = False
@@ -238,17 +241,20 @@ def prepare_media_response(media, source_url):
         use_youtube_bundle = item_source == "youtube" and not youtube_cache_used
         instagram_info = item.pop("_instagram_info", None) if item_source == "instagram" else None
         instagram_index = item.pop("_instagram_index", item_index) if item_source == "instagram" else None
+        item_facebook_info = item.pop("_facebook_info", None) if item_source == "facebook" else None
+        facebook_index = item.pop("_facebook_index", item_index) if item_source == "facebook" else None
         item["proxy_id"] = cache_media(
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube", "instagram") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
             youtube_info=youtube_info if use_youtube_bundle else None,
             instagram_info=instagram_info,
-            item_index=instagram_index,
+            facebook_info=item_facebook_info,
+            item_index=facebook_index if item_source == "facebook" else instagram_index,
             media_type=item.get("type"),
         )
         if use_tiktok_bundle:
@@ -267,13 +273,18 @@ def prepare_media_response(media, source_url):
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube", "instagram") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
             youtube_info=youtube_info if use_youtube_bundle else None,
             instagram_info=media.pop("_instagram_info", None) if media_source == "instagram" else None,
-            item_index=media.pop("_instagram_index", 1) if media_source == "instagram" else None,
+            facebook_info=media.pop("_facebook_info", facebook_info) if media_source == "facebook" else None,
+            item_index=(
+                media.pop("_facebook_index", 1) if media_source == "facebook" else
+                media.pop("_instagram_index", 1) if media_source == "instagram" else
+                None
+            ),
             media_type=media.get("type"),
         )
         if use_tiktok_bundle:
@@ -291,6 +302,8 @@ def prepare_media_response(media, source_url):
     media.pop("http_headers", None)
     media.pop("_instagram_info", None)
     media.pop("_instagram_index", None)
+    media.pop("_facebook_info", None)
+    media.pop("_facebook_index", None)
     return media
 
 def extract_tiktok_fast(source_url):
@@ -376,9 +389,11 @@ def extract_media(source_url):
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
     is_instagram = "instagram" in host
+    is_facebook = "facebook" in host or host == "fb.watch"
     tiktok_cookiefile = None
     tiktok_info = None
     youtube_info = None
+    facebook_info = None
 
     if is_tiktok and curl_requests is not None:
         info, tiktok_info, tiktok_cookiefile = extract_tiktok_fast(source_url)
@@ -402,7 +417,10 @@ def extract_media(source_url):
                 if is_youtube and info:
                     youtube_info = extractor.sanitize_info(info)
                 instagram_info = extractor.sanitize_info(info) if is_instagram and info else None
-            media = normalize_carousel_media(info, host, instagram_info)
+                facebook_info = extractor.sanitize_info(info) if is_facebook and info else None
+            media = normalize_carousel_media(
+                info, host, instagram_info if is_instagram else facebook_info
+            )
         except Exception as error:
             if is_youtube:
                 print(f"Falha na análise do YouTube: {type(error).__name__}: {error}")
@@ -422,6 +440,16 @@ def extract_media(source_url):
         except Exception:
             media = None
 
+    # Posts públicos de foto do Facebook nem sempre são expostos pelo yt-dlp.
+    # Como fallback, usamos os metadados públicos da própria página (og:image /
+    # og:video), sem exigir login ou sessão do usuário.
+    if not media and is_facebook:
+        try:
+            media = extract_facebook_public_metadata(source_url)
+        except Exception as error:
+            print(f"Falha no fallback público do Facebook: {type(error).__name__}: {error}")
+            media = None
+
     if not media:
         if tiktok_cookiefile:
             try:
@@ -435,6 +463,8 @@ def extract_media(source_url):
         media["_tiktok_cookiefile"] = tiktok_cookiefile
     if is_youtube:
         media["_youtube_info"] = youtube_info
+    if is_facebook and facebook_info:
+        media["_facebook_info"] = facebook_info
     return media, None
 
 def normalize_youtube_media(info, host):
@@ -548,6 +578,140 @@ def normalize_instagram_entry(entry, host, index):
     return None
 
 
+
+def select_facebook_video_format(entry):
+    """Escolhe uma faixa MP4 adequada para a prévia do Facebook.
+
+    Para a prévia damos preferência a vídeo progressivo (com áudio), H.264 e
+    resolução de até 720p. O download final continua sendo preparado pelo
+    yt-dlp + FFmpeg, então não sacrificamos a qualidade do arquivo baixado.
+    """
+    candidates = []
+    for fmt in entry.get("formats") or []:
+        if not isinstance(fmt, dict) or not fmt.get("url"):
+            continue
+        vcodec = str(fmt.get("vcodec") or "none").lower()
+        if vcodec == "none":
+            continue
+        acodec = str(fmt.get("acodec") or "none").lower()
+        ext = str(fmt.get("ext") or "").lower()
+        height = fmt.get("height") or 0
+        tbr = fmt.get("tbr") or 0
+        score = (
+            1 if acodec != "none" else 0,
+            1 if ext == "mp4" else 0,
+            1 if vcodec.startswith(("h264", "avc")) else 0,
+            1 if height and height <= 720 else 0,
+            height if height <= 720 else -height,
+            tbr,
+        )
+        candidates.append((score, fmt))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def normalize_facebook_entry(entry, host, index):
+    video_format = select_facebook_video_format(entry)
+    if video_format:
+        title = entry.get("title") or f"Vídeo do Facebook {index}"
+        return {
+            "status": "ready",
+            "source": "facebook",
+            "type": "video",
+            "url": video_format["url"],
+            "title": title,
+            "thumbnail": entry.get("thumbnail"),
+            "filename": f"{safe_filename(title)}.mp4",
+            "media_count": 1,
+            "http_headers": video_format.get("http_headers") or entry.get("http_headers") or {},
+        }
+
+    if entry.get("url"):
+        item = normalize_media(entry, host)
+        if item:
+            item["source"] = "facebook"
+        return item
+    return None
+
+
+def extract_facebook_public_metadata(source_url):
+    """Fallback leve para posts públicos de foto/vídeo do Facebook."""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+        ),
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+
+    page = None
+    if curl_requests is not None:
+        response = curl_requests.get(
+            source_url,
+            headers=headers,
+            impersonate="chrome",
+            default_headers=True,
+            allow_redirects=True,
+            timeout=20,
+        )
+        response.raise_for_status()
+        page = response.text
+    else:
+        with urlopen(Request(source_url, headers=headers), timeout=20) as response:
+            page = response.read().decode("utf-8", "ignore")
+
+    if not page:
+        return None
+
+    from html import unescape as html_unescape
+    import re
+
+    def meta_value(*properties):
+        for prop in properties:
+            escaped = re.escape(prop)
+            patterns = (
+                rf'<meta[^>]+(?:property|name)=["\']{escaped}["\'][^>]+content=["\']([^"\']+)["\']',
+                rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{escaped}["\']',
+            )
+            for pattern in patterns:
+                match = re.search(pattern, page, re.IGNORECASE)
+                if match:
+                    return html_unescape(match.group(1)).replace("&amp;", "&")
+        return None
+
+    title = meta_value("og:title", "twitter:title") or "Mídia do Facebook"
+    image_url = meta_value("og:image", "twitter:image")
+    video_url = meta_value("og:video:url", "og:video:secure_url", "og:video")
+
+    if video_url and video_url.startswith("https://"):
+        return {
+            "status": "ready",
+            "source": "facebook",
+            "type": "video",
+            "url": video_url,
+            "title": title,
+            "thumbnail": image_url,
+            "filename": f"{safe_filename(title)}.mp4",
+            "media_count": 1,
+        }
+
+    if image_url and image_url.startswith("https://"):
+        path = urlparse(image_url).path.lower()
+        extension = "png" if path.endswith(".png") else "webp" if path.endswith(".webp") else "jpg"
+        return {
+            "status": "ready",
+            "source": "facebook",
+            "type": "image",
+            "url": image_url,
+            "title": title,
+            "thumbnail": image_url,
+            "filename": f"{safe_filename(title)}.{extension}",
+            "media_count": 1,
+        }
+    return None
+
 def normalize_carousel_media(info, host, sanitized_info=None):
     if not info:
         return None
@@ -579,6 +743,13 @@ def normalize_carousel_media(info, host, sanitized_info=None):
                 if safe_entry:
                     item["_instagram_info"] = safe_entry
                 item["_instagram_index"] = index
+        elif "facebook" in host or host == "fb.watch":
+            item = normalize_facebook_entry(entry, host, index)
+            if item and item.get("type") == "video":
+                safe_entry = safe_items[index - 1] if index - 1 < len(safe_items) else None
+                if safe_entry:
+                    item["_facebook_info"] = safe_entry
+                item["_facebook_index"] = index
         elif entry.get("url"):
             item = normalize_media(entry, host)
         else:
@@ -689,6 +860,17 @@ class WorkerHandler(BaseHTTPRequestHandler):
             and cached.get("media_type") == "video"
         ):
             return self.proxy_instagram_with_ytdlp(cached)
+
+        # Facebook também pode entregar vídeo e áudio em faixas separadas.
+        # No download final preparamos um MP4 completo para evitar arquivo sem
+        # som ou incompatível com a Galeria do Android.
+        if (
+            source == "facebook"
+            and cached
+            and download_requested
+            and cached.get("media_type") == "video"
+        ):
+            return self.proxy_facebook_with_ytdlp(cached)
 
         requested_range = self.headers.get("Range")
         if requested_range:
@@ -858,6 +1040,82 @@ class WorkerHandler(BaseHTTPRequestHandler):
                         self.wfile.write(chunk)
             except (BrokenPipeError, ConnectionResetError):
                 pass
+
+    def proxy_facebook_with_ytdlp(self, cached):
+        page_url = cached.get("page_url")
+        info_path = cached.get("info_path")
+        item_index = cached.get("item_index") or 1
+        filename = cached.get("filename") or "facebook-video.mp4"
+        filename = str(Path(filename).with_suffix(".mp4"))
+
+        if not page_url and not (info_path and Path(info_path).is_file()):
+            return self.respond(410, {"error": "Este link expirou. Analise a publicação novamente."})
+
+        format_selector = (
+            "best[ext=mp4][vcodec!=none][acodec!=none]/"
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo[ext=mp4]+bestaudio/"
+            "bestvideo+bestaudio/"
+            "best[ext=mp4]/best"
+        )
+
+        with tempfile.TemporaryDirectory(prefix="soft-facebook-") as temp_dir:
+            output_template = str(Path(temp_dir) / "download.%(ext)s")
+
+            def run_download(use_info_json):
+                command = [
+                    sys.executable, "-m", "yt_dlp",
+                    "--quiet", "--no-warnings", "--no-progress",
+                    "-f", format_selector,
+                    "--merge-output-format", "mp4",
+                    "-o", output_template,
+                ]
+                if use_info_json and info_path and Path(info_path).is_file():
+                    command.extend(["--load-info-json", info_path])
+                elif page_url:
+                    command.extend(["--playlist-items", str(item_index), page_url])
+                else:
+                    return None
+                return subprocess.run(
+                    command,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+
+            result = run_download(True)
+            if result is None or result.returncode != 0:
+                detail = (result.stderr if result else "").strip()
+                if detail:
+                    print(f"Falha no download Facebook via info-json: {detail[-1600:]}")
+                result = run_download(False)
+
+            if result is None or result.returncode != 0:
+                detail = (result.stderr if result else "").strip()
+                print(f"Falha no download Facebook via yt-dlp: {detail[-1600:]}")
+                return self.respond(502, {"error": "Não foi possível preparar este vídeo do Facebook."})
+
+            files = [
+                path for path in Path(temp_dir).iterdir()
+                if path.is_file() and path.suffix.lower() in (".mp4", ".m4v", ".mov")
+            ]
+            if not files:
+                return self.respond(502, {"error": "Não foi possível preparar este vídeo do Facebook."})
+
+            final_path = max(files, key=lambda path: path.stat().st_size)
+            self.send_response(200)
+            origin = self.headers.get("Origin")
+            if origin in ALLOWED_ORIGINS:
+                self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(final_path.stat().st_size))
+            self.send_header("Content-Disposition", content_disposition(filename))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            with final_path.open("rb") as stream:
+                while chunk := stream.read(64 * 1024):
+                    self.wfile.write(chunk)
 
     def proxy_youtube_with_ytdlp(self, cached, download_requested=False):
         page_url = cached.get("page_url") or cached.get("url")

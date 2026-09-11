@@ -40,6 +40,9 @@ function identifySource(url) {
   if (host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be') {
     return pending('youtube', 'Link do YouTube identificado. Esta fonte não oferece download por API oficial.');
   }
+  if (host === 'facebook.com' || host.endsWith('.facebook.com') || host === 'fb.watch') {
+    return pending('facebook', 'Link público do Facebook identificado.');
+  }
   return { status: 'unsupported', source: 'other', message: 'Este link não parece ser uma mídia direta nem uma plataforma compatível.' };
 }
 
