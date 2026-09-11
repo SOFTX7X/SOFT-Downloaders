@@ -46,6 +46,9 @@ function identifySource(url) {
   if (host === 'x.com' || host.endsWith('.x.com') || host === 'twitter.com' || host.endsWith('.twitter.com')) {
     return pending('twitter', 'Link público do X/Twitter identificado.');
   }
+  if (host === 'pin.it' || host === 'pinterest.com' || host.endsWith('.pinterest.com')) {
+    return pending('pinterest', 'Pin público do Pinterest identificado.');
+  }
   return { status: 'unsupported', source: 'other', message: 'Este link não parece ser uma mídia direta nem uma plataforma compatível.' };
 }
 

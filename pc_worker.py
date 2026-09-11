@@ -43,7 +43,7 @@ ALLOWED_ORIGINS = {"https://softdownloaders.vercel.app", "https://softdownloader
 WORKER_SECRET = os.environ.get("SOFT_WORKER_SECRET", "")
 MEDIA_HOSTS = (
     "fbcdn.net", "cdninstagram.com", "tiktok.com", "tiktokcdn.com",
-    "byteoversea.com", "googlevideo.com", "ytimg.com", "twimg.com",
+    "byteoversea.com", "googlevideo.com", "ytimg.com", "twimg.com", "pinimg.com",
 )
 MEDIA_CACHE_TTL = 20 * 60
 MEDIA_CACHE = {}
@@ -105,6 +105,7 @@ def default_proxy_headers(source):
         "facebook": "https://www.facebook.com/",
         "youtube": "https://www.youtube.com/",
         "twitter": "https://x.com/",
+        "pinterest": "https://www.pinterest.com/",
     }
     return {
         "User-Agent": "Mozilla/5.0",
@@ -248,7 +249,7 @@ def prepare_media_response(media, source_url):
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -274,7 +275,7 @@ def prepare_media_response(media, source_url):
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -385,17 +386,30 @@ def extract_media(source_url):
     if parsed.scheme not in ("http", "https") or not any(
         host == item or host.endswith("." + item) for item in ALLOWED_HOSTS
     ):
-        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook ou X/Twitter."
+        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter ou Pinterest."
 
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
     is_instagram = "instagram" in host
     is_facebook = "facebook" in host or host == "fb.watch"
     is_twitter = host == "x.com" or host.endswith(".x.com") or "twitter.com" in host
+    is_pinterest = host == "pin.it" or host == "pinterest.com" or host.endswith(".pinterest.com")
     tiktok_cookiefile = None
     tiktok_info = None
     youtube_info = None
     facebook_info = None
+
+    # Pinterest não possui extrator dedicado no yt-dlp. Para Pins públicos,
+    # lemos os dados SSR/GraphQL que a própria página envia ao navegador.
+    # Isso cobre imagens, vídeos progressivos MP4 e carrosséis quando expostos.
+    if is_pinterest:
+        try:
+            pinterest_media = extract_pinterest_public_media(source_url)
+            if pinterest_media:
+                return pinterest_media, None
+        except Exception as error:
+            print(f"Falha no extrator público do Pinterest: {type(error).__name__}: {error}")
+        return None, "Não foi possível ler este Pin agora. Confirme se ele é público e tente novamente."
 
     # X/Twitter oferece um endpoint público de syndication usado nos embeds.
     # Ele é a melhor primeira tentativa porque também expõe posts de foto e
@@ -891,6 +905,443 @@ def extract_x_syndication(source_url):
     return primary
 
 
+
+def _pinterest_pin_id(source_url):
+    parsed = urlparse(source_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    for index, part in enumerate(parts[:-1]):
+        if part.lower() == "pin":
+            candidate = parts[index + 1].split("-")[0]
+            if candidate.isdigit():
+                return candidate
+    return None
+
+
+def _pinterest_meta_value(page, *properties):
+    from html import unescape as html_unescape
+    import re
+
+    for prop in properties:
+        escaped = re.escape(prop)
+        patterns = (
+            rf'<meta[^>]+(?:property|name)=["\']{escaped}["\'][^>]+content=["\']([^"\']+)["\']',
+            rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{escaped}["\']',
+        )
+        for pattern in patterns:
+            match = re.search(pattern, page, re.IGNORECASE)
+            if match:
+                return html_unescape(match.group(1)).replace("&amp;", "&")
+    return None
+
+
+def _pinterest_extension(media_url, default="jpg"):
+    extension = Path(urlparse(media_url).path).suffix.lower().lstrip(".")
+    if extension == "jpeg":
+        return "jpg"
+    if extension in ("jpg", "png", "webp", "gif", "avif", "mp4", "webm"):
+        return extension
+    return default
+
+
+def _pinterest_best_image(images):
+    """Escolhe a maior imagem de um bloco `images` do Pinterest."""
+    candidates = []
+
+    def walk(value, label=""):
+        if isinstance(value, dict):
+            url = value.get("url") or value.get("src")
+            if isinstance(url, str) and url.startswith("https://") and "pinimg.com" in (urlparse(url).hostname or "").lower():
+                width = value.get("width") or 0
+                height = value.get("height") or 0
+                try:
+                    area = int(width) * int(height)
+                except Exception:
+                    area = 0
+                orig_bonus = 10**12 if str(label).lower() in ("orig", "original", "originals") or "/originals/" in url else 0
+                candidates.append((orig_bonus + area, url))
+            for key, child in value.items():
+                if isinstance(child, (dict, list)):
+                    walk(child, key)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child, label)
+
+    walk(images)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _pinterest_best_video(video_node):
+    """Escolhe o MP4 progressivo de maior qualidade exposto no Pin."""
+    import re
+
+    candidates = []
+
+    def walk(value, label=""):
+        if isinstance(value, dict):
+            url = value.get("url") or value.get("src")
+            if isinstance(url, str) and url.startswith("https://"):
+                parsed = urlparse(url)
+                host = (parsed.hostname or "").lower()
+                path = parsed.path.lower()
+                mime = str(value.get("mime_type") or value.get("mimeType") or value.get("content_type") or "").lower()
+                if "pinimg.com" in host and (path.endswith(".mp4") or "video/mp4" in mime):
+                    width = value.get("width") or 0
+                    height = value.get("height") or 0
+                    bitrate = value.get("bitrate") or value.get("bit_rate") or 0
+                    try:
+                        area = int(width) * int(height)
+                    except Exception:
+                        area = 0
+                    try:
+                        bitrate = int(bitrate)
+                    except Exception:
+                        bitrate = 0
+                    quality_numbers = [int(item) for item in re.findall(r"\d+", str(label))]
+                    quality = max(quality_numbers, default=0)
+                    candidates.append(((area, quality, bitrate), url))
+            for key, child in value.items():
+                if isinstance(child, (dict, list)):
+                    walk(child, key)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child, label)
+
+    walk(video_node)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _pinterest_image_from_node(node):
+    if not isinstance(node, dict):
+        return None
+    for key in ("images", "image", "image_spec", "imageSpec", "cover_image", "coverImage"):
+        value = node.get(key)
+        if isinstance(value, (dict, list)):
+            image = _pinterest_best_image(value)
+            if image:
+                return image
+    # Story/Idea Pins colocam a imagem principal dentro de pages -> blocks.
+    for child in node.values():
+        if isinstance(child, dict):
+            image = _pinterest_image_from_node(child)
+            if image:
+                return image
+        elif isinstance(child, list):
+            for item in child:
+                if isinstance(item, dict):
+                    image = _pinterest_image_from_node(item)
+                    if image:
+                        return image
+    return None
+
+
+def _pinterest_video_from_node(node):
+    if not isinstance(node, dict):
+        return None
+    for key in ("videos", "video", "video_list", "videoList", "video_urls", "videoUrls"):
+        value = node.get(key)
+        if isinstance(value, (dict, list)):
+            video = _pinterest_best_video(value)
+            if video:
+                return video
+    return None
+
+
+def _pinterest_find_pin_objects(data, pin_id):
+    candidates = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            object_id = str(value.get("id") or value.get("pin_id") or value.get("pinId") or "")
+            richness = sum(1 for key in (
+                "images", "videos", "story_pin_data", "storyPinData",
+                "carousel_data", "carouselData", "grid_title", "closeup_unified_description",
+            ) if key in value)
+            if richness:
+                score = richness
+                if pin_id and object_id == str(pin_id):
+                    score += 100
+                candidates.append((score, value))
+            for child in value.values():
+                if isinstance(child, (dict, list)):
+                    walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(data)
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return [value for _, value in candidates]
+
+
+def _pinterest_make_item(kind, media_url, title, pin_id, index, thumbnail=None):
+    extension = "mp4" if kind == "video" else _pinterest_extension(media_url, "jpg")
+    return {
+        "status": "ready",
+        "source": "pinterest",
+        "type": kind,
+        "url": media_url,
+        "title": title,
+        "thumbnail": thumbnail or (media_url if kind == "image" else None),
+        "filename": f"pinterest-{pin_id or 'pin'}-{index}.{extension}",
+        "media_count": 1,
+    }
+
+
+def _pinterest_items_from_pin(pin, pin_id, fallback_title):
+    if not isinstance(pin, dict):
+        return []
+
+    title = str(
+        pin.get("grid_title")
+        or pin.get("title")
+        or pin.get("closeup_unified_description")
+        or pin.get("description")
+        or fallback_title
+        or "Mídia do Pinterest"
+    ).strip() or "Mídia do Pinterest"
+
+    # Carrosséis tradicionais usam carousel_data/carousel_slots. Mantemos um
+    # item por slot, escolhendo vídeo quando o slot oferece vídeo e imagem.
+    carousel = pin.get("carousel_data") or pin.get("carouselData")
+    if isinstance(carousel, dict):
+        slots = (
+            carousel.get("carousel_slots")
+            or carousel.get("carouselSlots")
+            or carousel.get("slides")
+            or carousel.get("items")
+        )
+        if isinstance(slots, list) and slots:
+            items = []
+            for index, slot in enumerate(slots, start=1):
+                if not isinstance(slot, dict):
+                    continue
+                poster = _pinterest_image_from_node(slot)
+                video = _pinterest_video_from_node(slot)
+                if video:
+                    items.append(_pinterest_make_item("video", video, title, pin_id, index, poster))
+                elif poster:
+                    items.append(_pinterest_make_item("image", poster, title, pin_id, index, poster))
+            if items:
+                return items
+
+    # Idea/Story Pins podem ter várias páginas, cada uma com blocos próprios.
+    story = pin.get("story_pin_data") or pin.get("storyPinData")
+    if isinstance(story, dict):
+        pages = story.get("pages")
+        if isinstance(pages, list) and pages:
+            items = []
+            for index, page in enumerate(pages, start=1):
+                if not isinstance(page, dict):
+                    continue
+                poster = _pinterest_image_from_node(page)
+                video = _pinterest_best_video(page)
+                if video:
+                    items.append(_pinterest_make_item("video", video, title, pin_id, index, poster))
+                elif poster:
+                    items.append(_pinterest_make_item("image", poster, title, pin_id, index, poster))
+            if items:
+                return items
+
+    poster = _pinterest_image_from_node(pin)
+    video = _pinterest_video_from_node(pin)
+    if video:
+        return [_pinterest_make_item("video", video, title, pin_id, 1, poster)]
+    if poster:
+        return [_pinterest_make_item("image", poster, title, pin_id, 1, poster)]
+    return []
+
+
+def _pinterest_fetch_page(source_url, headers):
+    if curl_requests is not None:
+        response = curl_requests.get(
+            source_url,
+            headers=headers,
+            impersonate="chrome",
+            default_headers=True,
+            allow_redirects=True,
+            timeout=20,
+        )
+        response.raise_for_status()
+        return response.text, str(response.url)
+    with urlopen(Request(source_url, headers=headers), timeout=20) as response:
+        return response.read().decode("utf-8", "ignore"), response.geturl()
+
+
+def _pinterest_resource_pin(pin_id, headers):
+    """Consulta o recurso público detalhado de um Pin individual."""
+    endpoint = "https://www.pinterest.com/resource/PinResource/get/"
+    params = {
+        "source_url": f"/pin/{pin_id}/",
+        "data": json.dumps({
+            "options": {"id": str(pin_id), "field_set_key": "detailed"},
+            "context": {},
+        }, separators=(",", ":")),
+    }
+    request_headers = dict(headers)
+    request_headers.update({
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "X-Pinterest-PWS-Handler": "www/[username]/pin.js",
+        "Referer": f"https://www.pinterest.com/pin/{pin_id}/",
+    })
+
+    if curl_requests is not None:
+        response = curl_requests.get(
+            endpoint,
+            params=params,
+            headers=request_headers,
+            impersonate="chrome",
+            default_headers=True,
+            allow_redirects=True,
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    else:
+        request_url = f"{endpoint}?{urlencode(params)}"
+        with urlopen(Request(request_url, headers=request_headers), timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8", "ignore"))
+
+    resource = payload.get("resource_response") if isinstance(payload, dict) else None
+    if not isinstance(resource, dict) or resource.get("status") != "success":
+        return None
+    data = resource.get("data")
+    return data if isinstance(data, dict) else None
+
+
+def extract_pinterest_public_media(source_url):
+    """Extrai imagens e vídeos de Pins públicos sem sessão do usuário.
+
+    Primeiro usa o recurso público detalhado do Pin. Se o Pinterest mudar ou
+    limitar esse recurso, fazemos fallback para os JSONs SSR/Open Graph da
+    própria página. Links pin.it são resolvidos por redirecionamento normal.
+    """
+    from html import unescape as html_unescape
+    import re
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+        ),
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    }
+
+    page = None
+    final_url = source_url
+    pin_id = _pinterest_pin_id(source_url)
+
+    # pin.it não contém o ID. Uma única abertura resolve o redirecionamento e
+    # já deixa o HTML disponível caso seja necessário usar o fallback SSR.
+    if not pin_id:
+        page, final_url = _pinterest_fetch_page(source_url, headers)
+        final_host = (urlparse(final_url).hostname or "").lower().removeprefix("www.")
+        if not (final_host == "pinterest.com" or final_host.endswith(".pinterest.com")):
+            return None
+        pin_id = _pinterest_pin_id(final_url)
+
+    # Caminho principal: endpoint público que alimenta a página individual.
+    if pin_id:
+        try:
+            pin = _pinterest_resource_pin(pin_id, headers)
+            if pin:
+                title = str(
+                    pin.get("grid_title")
+                    or pin.get("title")
+                    or pin.get("closeup_unified_description")
+                    or pin.get("description")
+                    or "Mídia do Pinterest"
+                ).strip() or "Mídia do Pinterest"
+                items = _pinterest_items_from_pin(pin, pin_id, title)
+                if items:
+                    unique = []
+                    urls = set()
+                    for item in items:
+                        if item["url"] in urls:
+                            continue
+                        urls.add(item["url"])
+                        unique.append(item)
+                    primary = dict(unique[0])
+                    primary["items"] = unique
+                    primary["media_count"] = len(unique)
+                    return primary
+        except Exception as error:
+            print(f"Pinterest PinResource indisponível: {type(error).__name__}: {error}")
+
+    if page is None:
+        page, final_url = _pinterest_fetch_page(source_url, headers)
+
+    if not page:
+        return None
+
+    final_host = (urlparse(final_url).hostname or "").lower().removeprefix("www.")
+    if not (final_host == "pinterest.com" or final_host.endswith(".pinterest.com")):
+        return None
+
+    pin_id = pin_id or _pinterest_pin_id(final_url) or _pinterest_pin_id(source_url)
+    fallback_title = _pinterest_meta_value(page, "og:title", "twitter:title") or "Mídia do Pinterest"
+
+    # Fallback: dados iniciais SSR/Relay enviados ao navegador.
+    script_bodies = re.findall(
+        r'<script[^>]+(?:type=["\']application/json["\']|id=["\']__PWS_DATA__["\'])[^>]*>(.*?)</script>',
+        page,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    for body in script_bodies:
+        payload = None
+        for candidate in (body.strip(), html_unescape(body.strip())):
+            if not candidate:
+                continue
+            try:
+                payload = json.loads(candidate)
+                break
+            except Exception:
+                continue
+        if payload is None:
+            continue
+
+        for pin in _pinterest_find_pin_objects(payload, pin_id):
+            items = _pinterest_items_from_pin(pin, pin_id, fallback_title)
+            if items:
+                unique = []
+                urls = set()
+                for item in items:
+                    if item["url"] in urls:
+                        continue
+                    urls.add(item["url"])
+                    unique.append(item)
+                primary = dict(unique[0])
+                primary["items"] = unique
+                primary["media_count"] = len(unique)
+                return primary
+
+    # Último fallback: Open Graph cobre Pins simples de imagem e alguns vídeos.
+    image_url = _pinterest_meta_value(page, "og:image", "twitter:image")
+    video_url = _pinterest_meta_value(
+        page,
+        "og:video:secure_url", "og:video:url", "og:video", "twitter:player:stream",
+    )
+
+    if video_url and video_url.startswith("https://") and "pinimg.com" in (urlparse(video_url).hostname or "").lower():
+        item = _pinterest_make_item("video", video_url, fallback_title, pin_id, 1, image_url)
+        item["items"] = [dict(item)]
+        return item
+
+    if image_url and image_url.startswith("https://") and "pinimg.com" in (urlparse(image_url).hostname or "").lower():
+        item = _pinterest_make_item("image", image_url, fallback_title, pin_id, 1, image_url)
+        item["items"] = [dict(item)]
+        return item
+
+    return None
+
+
 def normalize_carousel_media(info, host, sanitized_info=None):
     if not info:
         return None
@@ -1013,6 +1464,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 "facebook" if "fbcdn" in host else
                 "youtube" if "googlevideo" in host or "ytimg" in host else
                 "twitter" if "twimg" in host else
+                "pinterest" if "pinimg" in host else
                 "instagram"
             )
             headers = default_proxy_headers(source)
