@@ -16,7 +16,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 try:
@@ -43,7 +43,7 @@ ALLOWED_ORIGINS = {"https://softdownloaders.vercel.app", "https://softdownloader
 WORKER_SECRET = os.environ.get("SOFT_WORKER_SECRET", "")
 MEDIA_HOSTS = (
     "fbcdn.net", "cdninstagram.com", "tiktok.com", "tiktokcdn.com",
-    "byteoversea.com", "googlevideo.com", "ytimg.com",
+    "byteoversea.com", "googlevideo.com", "ytimg.com", "twimg.com",
 )
 MEDIA_CACHE_TTL = 20 * 60
 MEDIA_CACHE = {}
@@ -104,6 +104,7 @@ def default_proxy_headers(source):
         "tiktok": "https://www.tiktok.com/",
         "facebook": "https://www.facebook.com/",
         "youtube": "https://www.youtube.com/",
+        "twitter": "https://x.com/",
     }
     return {
         "User-Agent": "Mozilla/5.0",
@@ -247,7 +248,7 @@ def prepare_media_response(media, source_url):
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -273,7 +274,7 @@ def prepare_media_response(media, source_url):
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -384,16 +385,28 @@ def extract_media(source_url):
     if parsed.scheme not in ("http", "https") or not any(
         host == item or host.endswith("." + item) for item in ALLOWED_HOSTS
     ):
-        return None, "Use um link público de Instagram, TikTok, YouTube ou Facebook."
+        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook ou X/Twitter."
 
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
     is_instagram = "instagram" in host
     is_facebook = "facebook" in host or host == "fb.watch"
+    is_twitter = host == "x.com" or host.endswith(".x.com") or "twitter.com" in host
     tiktok_cookiefile = None
     tiktok_info = None
     youtube_info = None
     facebook_info = None
+
+    # X/Twitter oferece um endpoint público de syndication usado nos embeds.
+    # Ele é a melhor primeira tentativa porque também expõe posts de foto e
+    # carrosséis, que o yt-dlp nem sempre retorna como mídia baixável.
+    if is_twitter:
+        try:
+            twitter_media = extract_x_syndication(source_url)
+            if twitter_media:
+                return twitter_media, None
+        except Exception as error:
+            print(f"Falha no syndication do X/Twitter: {type(error).__name__}: {error}")
 
     if is_tiktok and curl_requests is not None:
         info, tiktok_info, tiktok_cookiefile = extract_tiktok_fast(source_url)
@@ -712,6 +725,172 @@ def extract_facebook_public_metadata(source_url):
         }
     return None
 
+def _x_status_id(source_url):
+    parsed = urlparse(source_url)
+    parts = [part for part in parsed.path.split("/") if part]
+    for index, part in enumerate(parts[:-1]):
+        if part.lower() == "status" and parts[index + 1].isdigit():
+            return parts[index + 1]
+    return None
+
+
+def _x_original_image_url(media_url):
+    """Pede a versão original da imagem ao CDN do X quando possível."""
+    parsed = urlparse(media_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    extension = Path(parsed.path).suffix.lower().lstrip(".")
+    if extension in ("jpg", "jpeg", "png", "webp") and "format" not in query:
+        query["format"] = "jpg" if extension == "jpeg" else extension
+    query["name"] = "orig"
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def _x_image_extension(media_url):
+    parsed = urlparse(media_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    extension = str(query.get("format") or Path(parsed.path).suffix.lstrip(".") or "jpg").lower()
+    return "jpg" if extension == "jpeg" else extension if extension in ("jpg", "png", "webp", "gif") else "jpg"
+
+
+def _x_best_video_variant(variants):
+    candidates = []
+    for variant in variants or []:
+        if not isinstance(variant, dict):
+            continue
+        content_type = str(variant.get("content_type") or variant.get("type") or "").lower()
+        url = variant.get("url") or variant.get("src")
+        if not url or "mp4" not in content_type:
+            continue
+        bitrate = variant.get("bitrate") or 0
+        candidates.append((bitrate, url))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def extract_x_syndication(source_url):
+    """Extrai mídias públicas de um post do X/Twitter sem login.
+
+    O endpoint é o mesmo usado pelos embeds públicos do X. Ele retorna fotos,
+    vídeos e GIFs animados do post, inclusive múltiplas fotos.
+    """
+    status_id = _x_status_id(source_url)
+    if not status_id:
+        return None
+
+    endpoint = f"https://cdn.syndication.twimg.com/tweet-result?id={status_id}&token=1&lang=pt"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+        ),
+        "Accept": "application/json",
+        "Referer": "https://platform.twitter.com/",
+    }
+
+    if curl_requests is not None:
+        response = curl_requests.get(
+            endpoint,
+            headers=headers,
+            impersonate="chrome",
+            default_headers=True,
+            allow_redirects=True,
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json()
+    else:
+        with urlopen(Request(endpoint, headers=headers), timeout=20) as response:
+            data = json.loads(response.read().decode("utf-8", "ignore"))
+
+    if not isinstance(data, dict) or data.get("__typename") == "TweetTombstone":
+        return None
+
+    title = str(data.get("text") or "Mídia do X").strip() or "Mídia do X"
+    media_details = data.get("mediaDetails") if isinstance(data.get("mediaDetails"), list) else []
+    items = []
+
+    for index, detail in enumerate(media_details, start=1):
+        if not isinstance(detail, dict):
+            continue
+        kind = str(detail.get("type") or "").lower()
+        poster = detail.get("media_url_https") or detail.get("media_url")
+
+        if kind == "photo" and poster:
+            media_url = _x_original_image_url(poster)
+            extension = _x_image_extension(media_url)
+            items.append({
+                "status": "ready",
+                "source": "twitter",
+                "type": "image",
+                "url": media_url,
+                "title": title,
+                "thumbnail": media_url,
+                "filename": f"x-{status_id}-{index}.{extension}",
+                "media_count": 1,
+            })
+            continue
+
+        if kind in ("video", "animated_gif"):
+            video_info = detail.get("video_info") if isinstance(detail.get("video_info"), dict) else {}
+            video_url = _x_best_video_variant(video_info.get("variants"))
+            if video_url:
+                items.append({
+                    "status": "ready",
+                    "source": "twitter",
+                    "type": "video",
+                    "url": video_url,
+                    "title": title,
+                    "thumbnail": poster,
+                    "filename": f"x-{status_id}-{index}.mp4",
+                    "media_count": 1,
+                })
+
+    # Alguns retornos novos do syndication colocam as mídias em campos de alto
+    # nível. Usamos esses campos somente se mediaDetails não trouxe nada.
+    if not items:
+        photos = data.get("photos") if isinstance(data.get("photos"), list) else []
+        for index, photo in enumerate(photos, start=1):
+            if not isinstance(photo, dict) or not photo.get("url"):
+                continue
+            media_url = _x_original_image_url(photo["url"])
+            extension = _x_image_extension(media_url)
+            items.append({
+                "status": "ready",
+                "source": "twitter",
+                "type": "image",
+                "url": media_url,
+                "title": title,
+                "thumbnail": media_url,
+                "filename": f"x-{status_id}-{index}.{extension}",
+                "media_count": 1,
+            })
+
+    if not items and isinstance(data.get("video"), dict):
+        video = data["video"]
+        video_url = _x_best_video_variant(video.get("variants"))
+        if video_url:
+            items.append({
+                "status": "ready",
+                "source": "twitter",
+                "type": "video",
+                "url": video_url,
+                "title": title,
+                "thumbnail": video.get("poster"),
+                "filename": f"x-{status_id}.mp4",
+                "media_count": 1,
+            })
+
+    if not items:
+        return None
+
+    primary = dict(items[0])
+    primary["items"] = items
+    primary["media_count"] = len(items)
+    return primary
+
+
 def normalize_carousel_media(info, host, sanitized_info=None):
     if not info:
         return None
@@ -833,6 +1012,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 "tiktok" if "tiktok" in host or "byte" in host else
                 "facebook" if "fbcdn" in host else
                 "youtube" if "googlevideo" in host or "ytimg" in host else
+                "twitter" if "twimg" in host else
                 "instagram"
             )
             headers = default_proxy_headers(source)

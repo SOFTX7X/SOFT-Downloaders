@@ -43,6 +43,9 @@ function identifySource(url) {
   if (host === 'facebook.com' || host.endsWith('.facebook.com') || host === 'fb.watch') {
     return pending('facebook', 'Link público do Facebook identificado.');
   }
+  if (host === 'x.com' || host.endsWith('.x.com') || host === 'twitter.com' || host.endsWith('.twitter.com')) {
+    return pending('twitter', 'Link público do X/Twitter identificado.');
+  }
   return { status: 'unsupported', source: 'other', message: 'Este link não parece ser uma mídia direta nem uma plataforma compatível.' };
 }
 
