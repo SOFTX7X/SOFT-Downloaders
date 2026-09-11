@@ -884,6 +884,201 @@ def _reddit_fetch_post(source_url):
     return post if isinstance(post, dict) else None, canonical_url, post_id
 
 
+
+def _reddit_decode_html_blob(value):
+    """Normaliza URLs que o Reddit deixa escapadas no HTML/JSON embutido."""
+    from html import unescape as html_unescape
+
+    if not isinstance(value, str):
+        return ""
+    value = html_unescape(value)
+    replacements = {
+        r"\/": "/",
+        r"\u0026": "&",
+        r"\u003d": "=",
+        r"\u003D": "=",
+        r"\u002f": "/",
+        r"\u002F": "/",
+        r"\u003a": ":",
+        r"\u003A": ":",
+    }
+    for old, new in replacements.items():
+        value = value.replace(old, new)
+    return value
+
+
+def _reddit_html_meta(html_text):
+    import re
+    from html import unescape as html_unescape
+
+    result = {}
+    for tag in re.findall(r"<meta\b[^>]*>", html_text or "", flags=re.I):
+        attrs = {}
+        for name, quote_char, value in re.findall(
+            r"([A-Za-z_:.-]+)\s*=\s*([\"'])(.*?)\2",
+            tag,
+            flags=re.I | re.S,
+        ):
+            attrs[name.lower()] = html_unescape(value).strip()
+        key = (attrs.get("property") or attrs.get("name") or "").lower()
+        content = attrs.get("content")
+        if key and content and key not in result:
+            result[key] = content
+    return result
+
+
+def _reddit_probe_url(candidate, referer):
+    """Confirma rapidamente se uma faixa direta do CDN do Reddit existe."""
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": referer or "https://www.reddit.com/",
+        "Range": "bytes=0-0",
+        "Accept": "*/*",
+    }
+    try:
+        if curl_requests is not None:
+            response = curl_requests.get(
+                candidate,
+                headers=headers,
+                impersonate="chrome",
+                default_headers=True,
+                allow_redirects=True,
+                stream=True,
+                timeout=10,
+            )
+            ok = response.status_code in (200, 206)
+            try:
+                response.close()
+            except Exception:
+                pass
+            return ok
+        with urlopen(Request(candidate, headers=headers), timeout=10) as response:
+            return getattr(response, "status", 200) in (200, 206)
+    except Exception:
+        return False
+
+
+def _reddit_direct_video_from_blob(blob, canonical_url):
+    """Encontra uma faixa MP4 pública em HTML do Reddit sem usar a API JSON."""
+    import re
+
+    text = _reddit_decode_html_blob(blob)
+    direct = []
+    for match in re.finditer(r"https://v\.redd\.it/[^\s\"'<>]+", text, flags=re.I):
+        candidate = match.group(0).rstrip("),.;]")
+        if ".mp4" in candidate.lower():
+            direct.append(candidate)
+
+    # Preferimos a maior faixa DASH mencionada diretamente na página.
+    def score(url):
+        found = re.search(r"DASH_(\d+)\.mp4", url, flags=re.I)
+        return int(found.group(1)) if found else 0
+
+    if direct:
+        direct = sorted(dict.fromkeys(direct), key=score, reverse=True)
+        for candidate in direct:
+            if _reddit_probe_url(candidate, canonical_url):
+                return candidate
+
+    # Se o HTML expuser apenas o identificador/base v.redd.it, testamos as
+    # resoluções progressivas mais comuns do próprio CDN do Reddit.
+    bases = []
+    for match in re.finditer(r"https://v\.redd\.it/([A-Za-z0-9]+)", text, flags=re.I):
+        base = f"https://v.redd.it/{match.group(1)}"
+        if base not in bases:
+            bases.append(base)
+
+    for base in bases:
+        for height in (1080, 720, 480, 360, 240, 96):
+            candidate = f"{base}/DASH_{height}.mp4"
+            if _reddit_probe_url(candidate, canonical_url):
+                return candidate
+    return None
+
+
+def extract_reddit_public_html_media(source_url):
+    """Fallback público via HTML para quando Reddit bloqueia o endpoint .json."""
+    import re
+
+    canonical_url = source_url
+    if not _reddit_post_id(canonical_url):
+        canonical_url = _reddit_resolve_url(source_url)
+    post_id = _reddit_post_id(canonical_url)
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    }
+    if curl_requests is not None:
+        response = curl_requests.get(
+            canonical_url,
+            headers=headers,
+            impersonate="chrome",
+            default_headers=True,
+            allow_redirects=True,
+            timeout=20,
+        )
+        response.raise_for_status()
+        canonical_url = str(response.url)
+        html_text = response.text
+    else:
+        with urlopen(Request(canonical_url, headers=headers), timeout=20) as response:
+            canonical_url = response.geturl()
+            html_text = response.read().decode("utf-8", "ignore")
+
+    meta = _reddit_html_meta(html_text)
+    title = str(meta.get("og:title") or meta.get("twitter:title") or "Mídia do Reddit").strip()
+    if not title:
+        title = "Mídia do Reddit"
+
+    # Vídeo tem prioridade absoluta sobre a capa/og:image.
+    video_url = None
+    for key in ("og:video:secure_url", "og:video:url", "og:video", "twitter:player:stream"):
+        candidate = _reddit_clean_url(meta.get(key))
+        if candidate and _reddit_allowed_media_url(candidate) and ".mp4" in urlparse(candidate).path.lower():
+            video_url = candidate
+            break
+    if not video_url:
+        video_url = _reddit_direct_video_from_blob(html_text, canonical_url)
+
+    image_url = None
+    for key in ("og:image:secure_url", "og:image", "twitter:image", "twitter:image:src"):
+        candidate = _reddit_clean_url(meta.get(key))
+        if candidate and _reddit_allowed_media_url(candidate):
+            image_url = candidate
+            break
+
+    # Também aceitamos URLs diretas de imagem presentes no HTML quando o meta
+    # aponta para um redirecionador /media do Reddit.
+    if not image_url:
+        decoded = _reddit_decode_html_blob(html_text)
+        matches = re.findall(
+            r"https://(?:i|preview|external-preview)\.redd\.it/[^\s\"'<>]+",
+            decoded,
+            flags=re.I,
+        )
+        for candidate in matches:
+            candidate = candidate.rstrip("),.;]")
+            if _reddit_allowed_media_url(candidate):
+                image_url = candidate
+                break
+
+    if video_url:
+        item = _reddit_make_item("video", video_url, title, post_id, 1, image_url)
+        item["_reddit_page_url"] = canonical_url
+        return item
+
+    if image_url:
+        item = _reddit_make_item("image", image_url, title, post_id, 1, image_url)
+        item["_reddit_page_url"] = canonical_url
+        return item
+    return None
+
+
 def _reddit_extension(media_url, default="jpg"):
     extension = Path(urlparse(media_url).path).suffix.lower().lstrip(".")
     if extension == "jpeg":
@@ -988,20 +1183,32 @@ def _reddit_items_from_post(post, post_id):
 
 
 def extract_reddit_public_media(source_url):
-    """Extrai vídeo, imagem e galerias de posts públicos do Reddit."""
-    post, canonical_url, post_id = _reddit_fetch_post(source_url)
-    if not post:
-        return None
+    """Extrai mídia pública do Reddit sem depender de login do usuário.
 
-    items = _reddit_items_from_post(post, post_id)
-    if not items:
-        return None
+    Tenta primeiro o JSON legado (melhor para galerias). Se o Reddit responder
+    403/autenticação, cai para o HTML público da publicação.
+    """
+    try:
+        post, canonical_url, post_id = _reddit_fetch_post(source_url)
+    except Exception as error:
+        print(f"JSON público do Reddit indisponível, usando HTML: {type(error).__name__}: {error}")
+        post, canonical_url, post_id = None, source_url, _reddit_post_id(source_url)
 
-    primary = dict(items[0])
-    primary["items"] = items
-    primary["media_count"] = len(items)
-    # Guardamos a URL canônica apenas internamente até prepare_media_response;
-    # o proxy recebe o link original como page_url e o yt-dlp segue redirects.
+    if post:
+        items = _reddit_items_from_post(post, post_id)
+        if items:
+            primary = dict(items[0])
+            primary["items"] = items
+            primary["media_count"] = len(items)
+            return primary
+
+    html_media = extract_reddit_public_html_media(canonical_url or source_url)
+    if not html_media:
+        return None
+    primary = dict(html_media)
+    primary.pop("_reddit_page_url", None)
+    primary["items"] = [dict(primary)]
+    primary["media_count"] = 1
     return primary
 
 
@@ -2099,10 +2306,11 @@ class WorkerHandler(BaseHTTPRequestHandler):
 
     def proxy_reddit_with_ytdlp(self, cached):
         page_url = cached.get("page_url")
+        direct_url = cached.get("url")
         filename = cached.get("filename") or "reddit-video.mp4"
         filename = str(Path(filename).with_suffix(".mp4"))
 
-        if not page_url:
+        if not page_url and not direct_url:
             return self.respond(410, {"error": "Este link expirou. Analise a publicação novamente."})
 
         format_selector = (
@@ -2114,51 +2322,121 @@ class WorkerHandler(BaseHTTPRequestHandler):
         )
 
         with tempfile.TemporaryDirectory(prefix="soft-reddit-") as temp_dir:
-            output_template = str(Path(temp_dir) / "download.%(ext)s")
-            command = [
-                sys.executable, "-m", "yt_dlp",
-                "--quiet", "--no-warnings", "--no-progress",
-                "-f", format_selector,
-                "--merge-output-format", "mp4",
-                "-o", output_template,
-                page_url,
-            ]
-            result = subprocess.run(
-                command,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            temp_path = Path(temp_dir)
+            output_template = str(temp_path / "download.%(ext)s")
 
-            if result.returncode != 0:
-                detail = (result.stderr or "").strip()
-                print(f"Falha no download Reddit via yt-dlp: {detail[-1600:]}")
+            # Mantemos yt-dlp como primeira opção quando o Reddit permitir. Em
+            # 2026 vários posts públicos já respondem "authentication required",
+            # então a falha aqui não encerra mais o download.
+            if page_url:
+                command = [
+                    sys.executable, "-m", "yt_dlp",
+                    "--quiet", "--no-warnings", "--no-progress",
+                    "-f", format_selector,
+                    "--merge-output-format", "mp4",
+                    "-o", output_template,
+                    page_url,
+                ]
+                result = subprocess.run(
+                    command,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    files = [
+                        path for path in temp_path.iterdir()
+                        if path.is_file() and path.suffix.lower() in (".mp4", ".m4v", ".mov")
+                    ]
+                    if files:
+                        final_path = max(files, key=lambda path: path.stat().st_size)
+                        return self.send_local_download(final_path, filename, "video/mp4")
+                else:
+                    detail = (result.stderr or "").strip()
+                    print(f"Reddit bloqueou yt-dlp; usando CDN direto: {detail[-1000:]}")
+
+            # Fallback sem cookies: baixa a faixa pública v.redd.it encontrada
+            # na análise. Quando há áudio DASH separado, tenta uni-lo com FFmpeg.
+            if not direct_url:
                 return self.respond(502, {"error": "Não foi possível preparar este vídeo do Reddit."})
 
-            files = [
-                path for path in Path(temp_dir).iterdir()
-                if path.is_file() and path.suffix.lower() in (".mp4", ".m4v", ".mov")
-            ]
-            if not files:
-                return self.respond(502, {"error": "Não foi possível preparar este vídeo do Reddit."})
-
-            final_path = max(files, key=lambda path: path.stat().st_size)
-            self.send_response(200)
-            origin = self.headers.get("Origin")
-            if origin in ALLOWED_ORIGINS:
-                self.send_header("Access-Control-Allow-Origin", origin)
-            self.send_header("Content-Type", "video/mp4")
-            self.send_header("Content-Length", str(final_path.stat().st_size))
-            self.send_header("Content-Disposition", content_disposition(filename))
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
+            video_path = temp_path / "video.mp4"
+            headers = default_proxy_headers("reddit")
             try:
-                with final_path.open("rb") as stream:
-                    while chunk := stream.read(64 * 1024):
-                        self.wfile.write(chunk)
-            except (BrokenPipeError, ConnectionResetError):
-                pass
+                if curl_requests is not None:
+                    response = curl_requests.get(
+                        direct_url,
+                        headers=headers,
+                        impersonate="chrome",
+                        default_headers=True,
+                        allow_redirects=True,
+                        stream=True,
+                        timeout=45,
+                    )
+                    response.raise_for_status()
+                    with video_path.open("wb") as stream:
+                        for chunk in response.iter_content():
+                            if chunk:
+                                stream.write(chunk)
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+                else:
+                    with urlopen(Request(direct_url, headers=headers), timeout=45) as response, video_path.open("wb") as stream:
+                        while chunk := response.read(64 * 1024):
+                            stream.write(chunk)
+            except Exception as error:
+                print(f"Falha ao baixar faixa direta Reddit: {type(error).__name__}: {error}")
+                return self.respond(502, {"error": "Não foi possível preparar este vídeo do Reddit."})
+
+            base_match = __import__("re").match(r"(https://v\.redd\.it/[A-Za-z0-9]+)", direct_url or "", flags=__import__("re").I)
+            audio_url = None
+            if base_match:
+                base = base_match.group(1)
+                for name in ("DASH_AUDIO_128.mp4", "DASH_AUDIO_64.mp4", "DASH_AUDIO.mp4"):
+                    candidate = f"{base}/{name}"
+                    if _reddit_probe_url(candidate, page_url or "https://www.reddit.com/"):
+                        audio_url = candidate
+                        break
+
+            if audio_url and shutil.which("ffmpeg"):
+                final_path = temp_path / "final.mp4"
+                merge = subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-loglevel", "error",
+                        "-i", str(video_path), "-i", audio_url,
+                        "-c:v", "copy", "-c:a", "aac", "-movflags", "+faststart",
+                        str(final_path),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                if merge.returncode == 0 and final_path.is_file() and final_path.stat().st_size > 0:
+                    return self.send_local_download(final_path, filename, "video/mp4")
+                if merge.stderr:
+                    print(f"Falha ao unir áudio Reddit; entregando vídeo: {merge.stderr[-800:]}")
+
+            return self.send_local_download(video_path, filename, "video/mp4")
+
+    def send_local_download(self, file_path, filename, content_type):
+        self.send_response(200)
+        origin = self.headers.get("Origin")
+        if origin in ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(file_path.stat().st_size))
+        self.send_header("Content-Disposition", content_disposition(filename))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            with file_path.open("rb") as stream:
+                while chunk := stream.read(64 * 1024):
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def proxy_youtube_with_ytdlp(self, cached, download_requested=False):
         page_url = cached.get("page_url") or cached.get("url")
