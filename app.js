@@ -45,10 +45,12 @@ document.querySelector('#pasteButton').addEventListener('click', async () => {
 });
 
 if (clearButton) {
-  clearButton.addEventListener('click', () => {
+  clearButton.addEventListener('click', (event) => {
+    event.preventDefault();
     input.value = '';
     syncClearButton();
-    input.focus();
+    input.blur();
+    clearButton.blur();
   });
 }
 
