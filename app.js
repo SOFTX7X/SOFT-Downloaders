@@ -15,6 +15,15 @@ const downloadStatus = document.querySelector('#downloadStatus');
 
 const DEFAULT_NOTE = 'Aceita links diretos para arquivos públicos: MP4, WebM, MP3, JPG, PNG e WebP.';
 
+const WORKER_MEDIA_HOST = 'api.forgeaioficial.online';
+
+function hasWorkerProxy(data) {
+  if (!data || data.source !== 'tiktok') return true;
+  if (data.proxy_id) return true;
+  const items = Array.isArray(data.items) ? data.items : [];
+  return items.length > 0 && items.every((item) => item && item.proxy_id);
+}
+
 document.querySelector('#year').textContent = new Date().getFullYear();
 document.querySelector('#pasteButton').addEventListener('click', async () => {
   try { input.value = await navigator.clipboard.readText(); input.focus(); } catch { input.focus(); }
@@ -71,6 +80,13 @@ form.addEventListener('submit', async (event) => {
 
   if (data.status !== 'ready') {
     return showResultError(data.message || 'Este link ainda não é compatível.');
+  }
+
+  // TikTok precisa sair do worker com um proxy_id. Sem esse token, a URL
+  // temporária do CDN pode até abrir a prévia, mas costuma devolver 403/502
+  // no download. Não deixamos o navegador cair nesse fluxo antigo.
+  if (!hasWorkerProxy(data)) {
+    return showResultError('Não foi possível preparar este vídeo agora. Tente analisar novamente.');
   }
 
   const items = Array.isArray(data.items) && data.items.length ? data.items : [data];
@@ -247,12 +263,15 @@ async function downloadMedia(mediaUrl, filename, button) {
     const isWorkerDownload = parsed.hostname === 'api.forgeaioficial.online' && parsed.pathname === '/media';
 
     if (isWorkerDownload) {
-      const trigger = document.createElement('a');
-      trigger.href = mediaUrl;
-      trigger.rel = 'noopener';
-      document.body.append(trigger);
-      trigger.click();
-      trigger.remove();
+      // Inicia o arquivo sem navegar a aba principal para o domínio do worker.
+      // Se o upstream oscilar, a página do usuário permanece no downloader em
+      // vez de ser substituída por uma tela 502 do Cloudflare.
+      const transferFrame = document.createElement('iframe');
+      transferFrame.hidden = true;
+      transferFrame.setAttribute('aria-hidden', 'true');
+      transferFrame.src = mediaUrl;
+      document.body.append(transferFrame);
+      window.setTimeout(() => transferFrame.remove(), 120000);
 
       restoreTimer = window.setTimeout(() => {
         if (button) {
@@ -311,6 +330,7 @@ function showFormError(message) {
 function proxyMediaUrl(url, source, proxyId, download = false) {
   if (!source || source === 'direct') return url;
   const suffix = download ? '&dl=1' : '';
-  if (proxyId) return `https://api.forgeaioficial.online/media?id=${encodeURIComponent(proxyId)}${suffix}`;
-  return `https://api.forgeaioficial.online/media?url=${encodeURIComponent(url)}${suffix}`;
+  if (proxyId) return `https://${WORKER_MEDIA_HOST}/media?id=${encodeURIComponent(proxyId)}${suffix}`;
+  if (source === 'tiktok') return '';
+  return `https://${WORKER_MEDIA_HOST}/media?url=${encodeURIComponent(url)}${suffix}`;
 }

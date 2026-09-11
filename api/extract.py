@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 from html import unescape
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
@@ -32,6 +33,14 @@ class handler(BaseHTTPRequestHandler):
                 proxied = request_pc_worker(worker_url, worker_secret, source_url)
                 if proxied:
                     return self.respond(200, proxied)
+                # No TikTok, uma resposta sem proxy_id deixa apenas uma URL
+                # temporária do CDN. Ela pode carregar a prévia e falhar com
+                # 403/502 no download. Se o worker não responder, falhamos
+                # dentro do site em vez de devolver esse fallback instável.
+                if "tiktok" in host:
+                    return self.respond(503, {
+                        "error": "Não foi possível preparar este vídeo agora. Tente analisar novamente."
+                    })
 
             options = {
                 "quiet": True,
@@ -170,24 +179,29 @@ def extract_embedded_url(page, field):
 
 
 def request_pc_worker(worker_url, worker_secret, source_url):
-    """Uses the PC worker; an optional secret can be enabled without changing the client."""
+    """Uses the PC worker and retries once for transient tunnel/TikTok failures."""
     body = json.dumps({"url": source_url}).encode("utf-8")
-    request = Request(
-        f"{worker_url}/extract",
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "X-Soft-Worker-Key": worker_secret,
-            "User-Agent": "SOFT-Downloaders/1.0",
-        },
-    )
-    try:
-        with urlopen(request, timeout=35) as response:
-            data = json.loads(response.read().decode("utf-8"))
-        return data if data.get("status") == "ready" and data.get("url") else None
-    except Exception:
-        return None
+    for attempt in range(2):
+        request = Request(
+            f"{worker_url}/extract",
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-Soft-Worker-Key": worker_secret,
+                "User-Agent": "SOFT-Downloaders/1.0",
+            },
+        )
+        try:
+            with urlopen(request, timeout=35) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            if data.get("status") == "ready" and data.get("url"):
+                return data
+        except Exception:
+            pass
+        if attempt == 0:
+            time.sleep(0.7)
+    return None
 
 
 def safe_filename(value):
