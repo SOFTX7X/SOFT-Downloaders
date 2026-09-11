@@ -49,6 +49,9 @@ function identifySource(url) {
   if (host === 'pin.it' || host === 'pinterest.com' || host.endsWith('.pinterest.com')) {
     return pending('pinterest', 'Pin público do Pinterest identificado.');
   }
+  if (host === 'redd.it' || host === 'reddit.com' || host.endsWith('.reddit.com')) {
+    return pending('reddit', 'Publicação pública do Reddit identificada.');
+  }
   return { status: 'unsupported', source: 'other', message: 'Este link não parece ser uma mídia direta nem uma plataforma compatível.' };
 }
 

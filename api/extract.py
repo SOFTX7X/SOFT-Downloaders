@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 from yt_dlp import YoutubeDL
 
 ALLOWED_HOSTS = (
-    "instagram.com", "tiktok.com", "youtube.com", "youtu.be", "facebook.com", "fb.watch", "x.com", "twitter.com", "pinterest.com", "pin.it",
+    "instagram.com", "tiktok.com", "youtube.com", "youtu.be", "facebook.com", "fb.watch", "x.com", "twitter.com", "pinterest.com", "pin.it", "reddit.com", "redd.it",
 )
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif", "avif"}
 AUDIO_EXTENSIONS = {"mp3", "m4a", "wav", "ogg", "opus", "aac"}
@@ -24,7 +24,7 @@ class handler(BaseHTTPRequestHandler):
             parsed = urlparse(source_url)
             host = parsed.hostname.lower().removeprefix("www.") if parsed.hostname else ""
             if parsed.scheme not in ("http", "https") or not any(host == item or host.endswith("." + item) for item in ALLOWED_HOSTS):
-                return self.respond(400, {"error": "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter ou Pinterest."})
+                return self.respond(400, {"error": "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest ou Reddit."})
 
             worker_url = os.environ.get("SOFT_WORKER_URL", "https://api.forgeaioficial.online").rstrip("/")
             worker_secret = os.environ.get("SOFT_WORKER_SECRET", "")
@@ -89,6 +89,8 @@ def detect_source(host):
         return "twitter"
     if host == "pin.it" or host == "pinterest.com" or host.endswith(".pinterest.com"):
         return "pinterest"
+    if host == "redd.it" or host == "reddit.com" or host.endswith(".reddit.com"):
+        return "reddit"
     return "facebook"
 
 

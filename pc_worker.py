@@ -44,6 +44,7 @@ WORKER_SECRET = os.environ.get("SOFT_WORKER_SECRET", "")
 MEDIA_HOSTS = (
     "fbcdn.net", "cdninstagram.com", "tiktok.com", "tiktokcdn.com",
     "byteoversea.com", "googlevideo.com", "ytimg.com", "twimg.com", "pinimg.com",
+    "redd.it", "redditmedia.com",
 )
 MEDIA_CACHE_TTL = 20 * 60
 MEDIA_CACHE = {}
@@ -106,6 +107,7 @@ def default_proxy_headers(source):
         "youtube": "https://www.youtube.com/",
         "twitter": "https://x.com/",
         "pinterest": "https://www.pinterest.com/",
+        "reddit": "https://www.reddit.com/",
     }
     return {
         "User-Agent": "Mozilla/5.0",
@@ -249,7 +251,7 @@ def prepare_media_response(media, source_url):
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -275,7 +277,7 @@ def prepare_media_response(media, source_url):
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -386,7 +388,7 @@ def extract_media(source_url):
     if parsed.scheme not in ("http", "https") or not any(
         host == item or host.endswith("." + item) for item in ALLOWED_HOSTS
     ):
-        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter ou Pinterest."
+        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest ou Reddit."
 
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
@@ -394,10 +396,22 @@ def extract_media(source_url):
     is_facebook = "facebook" in host or host == "fb.watch"
     is_twitter = host == "x.com" or host.endswith(".x.com") or "twitter.com" in host
     is_pinterest = host == "pin.it" or host == "pinterest.com" or host.endswith(".pinterest.com")
+    is_reddit = host == "redd.it" or host == "reddit.com" or host.endswith(".reddit.com")
     tiktok_cookiefile = None
     tiktok_info = None
     youtube_info = None
     facebook_info = None
+
+    # Reddit expõe metadados públicos em JSON para posts acessíveis sem login.
+    # Usamos essa fonte primeiro porque ela preserva galerias de imagens e
+    # também informa a URL progressiva de vídeos hospedados em v.redd.it.
+    if is_reddit:
+        try:
+            reddit_media = extract_reddit_public_media(source_url)
+            if reddit_media:
+                return reddit_media, None
+        except Exception as error:
+            print(f"Falha no extrator público do Reddit: {type(error).__name__}: {error}")
 
     # Pinterest não possui extrator dedicado no yt-dlp. Para Pins públicos,
     # lemos os dados SSR/GraphQL que a própria página envia ao navegador.
@@ -476,6 +490,9 @@ def extract_media(source_url):
         except Exception as error:
             print(f"Falha no fallback público do Facebook: {type(error).__name__}: {error}")
             media = None
+
+    if not media and is_reddit:
+        return None, "Não foi possível ler esta publicação do Reddit agora. Confirme se ela é pública e tente novamente."
 
     if not media:
         if tiktok_cookiefile:
@@ -757,6 +774,235 @@ def _x_original_image_url(media_url):
         query["format"] = "jpg" if extension == "jpeg" else extension
     query["name"] = "orig"
     return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+def _reddit_post_id(source_url):
+    import re
+
+    parsed = urlparse(source_url)
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    parts = [part for part in parsed.path.split("/") if part]
+
+    if host == "redd.it" and parts:
+        candidate = parts[0]
+        if re.fullmatch(r"[A-Za-z0-9]+", candidate):
+            return candidate
+
+    for index, part in enumerate(parts[:-1]):
+        if part.lower() in ("comments", "gallery"):
+            candidate = parts[index + 1]
+            if re.fullmatch(r"[A-Za-z0-9]+", candidate):
+                return candidate
+    return None
+
+
+def _reddit_clean_url(value):
+    from html import unescape as html_unescape
+
+    if not isinstance(value, str):
+        return None
+    value = html_unescape(value).replace("&amp;", "&").strip()
+    return value if value.startswith("https://") else None
+
+
+def _reddit_allowed_media_url(media_url):
+    if not media_url:
+        return False
+    host = (urlparse(media_url).hostname or "").lower()
+    return (
+        host == "i.redd.it" or host.endswith(".i.redd.it") or
+        host == "preview.redd.it" or host.endswith(".preview.redd.it") or
+        host == "external-preview.redd.it" or host.endswith(".external-preview.redd.it") or
+        host == "v.redd.it" or host.endswith(".v.redd.it") or
+        host == "redditmedia.com" or host.endswith(".redditmedia.com")
+    )
+
+
+def _reddit_resolve_url(source_url):
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+        ),
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+    }
+    if curl_requests is not None:
+        response = curl_requests.get(
+            source_url,
+            headers=headers,
+            impersonate="chrome",
+            default_headers=True,
+            allow_redirects=True,
+            timeout=15,
+        )
+        response.raise_for_status()
+        return str(response.url)
+
+    with urlopen(Request(source_url, headers=headers), timeout=15) as response:
+        return response.geturl()
+
+
+def _reddit_fetch_post(source_url):
+    post_id = _reddit_post_id(source_url)
+    canonical_url = source_url
+    if not post_id:
+        canonical_url = _reddit_resolve_url(source_url)
+        post_id = _reddit_post_id(canonical_url)
+    if not post_id:
+        return None, canonical_url, None
+
+    endpoint = f"https://www.reddit.com/comments/{post_id}.json?raw_json=1&limit=1"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+        ),
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+        "Referer": "https://www.reddit.com/",
+    }
+
+    if curl_requests is not None:
+        response = curl_requests.get(
+            endpoint,
+            headers=headers,
+            impersonate="chrome",
+            default_headers=True,
+            allow_redirects=True,
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    else:
+        with urlopen(Request(endpoint, headers=headers), timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8", "ignore"))
+
+    try:
+        post = payload[0]["data"]["children"][0]["data"]
+    except (KeyError, IndexError, TypeError):
+        return None, canonical_url, post_id
+    return post if isinstance(post, dict) else None, canonical_url, post_id
+
+
+def _reddit_extension(media_url, default="jpg"):
+    extension = Path(urlparse(media_url).path).suffix.lower().lstrip(".")
+    if extension == "jpeg":
+        return "jpg"
+    if extension in ("jpg", "png", "webp", "gif", "avif", "mp4", "webm"):
+        return extension
+    return default
+
+
+def _reddit_preview_image(post):
+    preview = post.get("preview") if isinstance(post.get("preview"), dict) else {}
+    images = preview.get("images") if isinstance(preview.get("images"), list) else []
+    if images and isinstance(images[0], dict):
+        source = images[0].get("source") if isinstance(images[0].get("source"), dict) else {}
+        candidate = _reddit_clean_url(source.get("url"))
+        if _reddit_allowed_media_url(candidate):
+            return candidate
+
+    thumbnail = _reddit_clean_url(post.get("thumbnail"))
+    if _reddit_allowed_media_url(thumbnail):
+        return thumbnail
+    return None
+
+
+def _reddit_make_item(kind, media_url, title, post_id, index, thumbnail=None):
+    extension = _reddit_extension(media_url, "mp4" if kind == "video" else "jpg")
+    if kind == "video" and extension not in ("mp4", "webm"):
+        extension = "mp4"
+    return {
+        "status": "ready",
+        "source": "reddit",
+        "type": kind,
+        "url": media_url,
+        "title": title,
+        "thumbnail": thumbnail or (media_url if kind == "image" else None),
+        "filename": f"reddit-{post_id or 'post'}-{index}.{extension}",
+        "media_count": 1,
+    }
+
+
+def _reddit_items_from_post(post, post_id):
+    if not isinstance(post, dict):
+        return []
+
+    title = str(post.get("title") or "Mídia do Reddit").strip() or "Mídia do Reddit"
+    poster = _reddit_preview_image(post)
+    items = []
+
+    gallery = post.get("gallery_data") if isinstance(post.get("gallery_data"), dict) else {}
+    gallery_items = gallery.get("items") if isinstance(gallery.get("items"), list) else []
+    metadata = post.get("media_metadata") if isinstance(post.get("media_metadata"), dict) else {}
+
+    for index, gallery_item in enumerate(gallery_items, start=1):
+        if not isinstance(gallery_item, dict):
+            continue
+        media_id = str(gallery_item.get("media_id") or "")
+        node = metadata.get(media_id) if isinstance(metadata.get(media_id), dict) else {}
+        source = node.get("s") if isinstance(node.get("s"), dict) else {}
+
+        video_url = _reddit_clean_url(source.get("mp4"))
+        gif_url = _reddit_clean_url(source.get("gif"))
+        image_url = _reddit_clean_url(source.get("u"))
+
+        if _reddit_allowed_media_url(video_url):
+            items.append(_reddit_make_item("video", video_url, title, post_id, index, image_url or poster))
+        elif _reddit_allowed_media_url(gif_url):
+            items.append(_reddit_make_item("image", gif_url, title, post_id, index, gif_url))
+        elif _reddit_allowed_media_url(image_url):
+            items.append(_reddit_make_item("image", image_url, title, post_id, index, image_url))
+
+    if items:
+        return items
+
+    media = post.get("secure_media") if isinstance(post.get("secure_media"), dict) else {}
+    if not media:
+        media = post.get("media") if isinstance(post.get("media"), dict) else {}
+    reddit_video = media.get("reddit_video") if isinstance(media.get("reddit_video"), dict) else {}
+
+    if not reddit_video:
+        preview = post.get("preview") if isinstance(post.get("preview"), dict) else {}
+        reddit_video = preview.get("reddit_video_preview") if isinstance(preview.get("reddit_video_preview"), dict) else {}
+
+    video_url = _reddit_clean_url(reddit_video.get("fallback_url"))
+    if _reddit_allowed_media_url(video_url):
+        return [_reddit_make_item("video", video_url, title, post_id, 1, poster)]
+
+    destination = _reddit_clean_url(post.get("url_overridden_by_dest") or post.get("url"))
+    if _reddit_allowed_media_url(destination):
+        extension = _reddit_extension(destination, "")
+        if extension in ("jpg", "png", "webp", "gif", "avif"):
+            return [_reddit_make_item("image", destination, title, post_id, 1, destination)]
+        if extension in ("mp4", "webm"):
+            return [_reddit_make_item("video", destination, title, post_id, 1, poster)]
+
+    # Crossposts mantêm a mídia original dentro deste bloco.
+    crossposts = post.get("crosspost_parent_list") if isinstance(post.get("crosspost_parent_list"), list) else []
+    for crosspost in crossposts:
+        nested = _reddit_items_from_post(crosspost, post_id)
+        if nested:
+            return nested
+    return []
+
+
+def extract_reddit_public_media(source_url):
+    """Extrai vídeo, imagem e galerias de posts públicos do Reddit."""
+    post, canonical_url, post_id = _reddit_fetch_post(source_url)
+    if not post:
+        return None
+
+    items = _reddit_items_from_post(post, post_id)
+    if not items:
+        return None
+
+    primary = dict(items[0])
+    primary["items"] = items
+    primary["media_count"] = len(items)
+    # Guardamos a URL canônica apenas internamente até prepare_media_response;
+    # o proxy recebe o link original como page_url e o yt-dlp segue redirects.
+    return primary
 
 
 def _x_image_extension(media_url):
@@ -1556,6 +1802,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 "youtube" if "googlevideo" in host or "ytimg" in host else
                 "twitter" if "twimg" in host else
                 "pinterest" if "pinimg" in host else
+                "reddit" if "redd.it" in host or "redditmedia" in host else
                 "instagram"
             )
             headers = default_proxy_headers(source)
@@ -1594,6 +1841,16 @@ class WorkerHandler(BaseHTTPRequestHandler):
             and cached.get("media_type") == "video"
         ):
             return self.proxy_facebook_with_ytdlp(cached)
+
+        # Reddit costuma separar vídeo e áudio em faixas DASH. No download
+        # final, o yt-dlp + FFmpeg monta um MP4 completo quando houver áudio.
+        if (
+            source == "reddit"
+            and cached
+            and download_requested
+            and cached.get("media_type") == "video"
+        ):
+            return self.proxy_reddit_with_ytdlp(cached)
 
         requested_range = self.headers.get("Range")
         if requested_range:
@@ -1839,6 +2096,69 @@ class WorkerHandler(BaseHTTPRequestHandler):
             with final_path.open("rb") as stream:
                 while chunk := stream.read(64 * 1024):
                     self.wfile.write(chunk)
+
+    def proxy_reddit_with_ytdlp(self, cached):
+        page_url = cached.get("page_url")
+        filename = cached.get("filename") or "reddit-video.mp4"
+        filename = str(Path(filename).with_suffix(".mp4"))
+
+        if not page_url:
+            return self.respond(410, {"error": "Este link expirou. Analise a publicação novamente."})
+
+        format_selector = (
+            "best[ext=mp4][vcodec!=none][acodec!=none]/"
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
+            "bestvideo[ext=mp4]+bestaudio/"
+            "bestvideo+bestaudio/"
+            "best[ext=mp4]/best"
+        )
+
+        with tempfile.TemporaryDirectory(prefix="soft-reddit-") as temp_dir:
+            output_template = str(Path(temp_dir) / "download.%(ext)s")
+            command = [
+                sys.executable, "-m", "yt_dlp",
+                "--quiet", "--no-warnings", "--no-progress",
+                "-f", format_selector,
+                "--merge-output-format", "mp4",
+                "-o", output_template,
+                page_url,
+            ]
+            result = subprocess.run(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            if result.returncode != 0:
+                detail = (result.stderr or "").strip()
+                print(f"Falha no download Reddit via yt-dlp: {detail[-1600:]}")
+                return self.respond(502, {"error": "Não foi possível preparar este vídeo do Reddit."})
+
+            files = [
+                path for path in Path(temp_dir).iterdir()
+                if path.is_file() and path.suffix.lower() in (".mp4", ".m4v", ".mov")
+            ]
+            if not files:
+                return self.respond(502, {"error": "Não foi possível preparar este vídeo do Reddit."})
+
+            final_path = max(files, key=lambda path: path.stat().st_size)
+            self.send_response(200)
+            origin = self.headers.get("Origin")
+            if origin in ALLOWED_ORIGINS:
+                self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(final_path.stat().st_size))
+            self.send_header("Content-Disposition", content_disposition(filename))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            try:
+                with final_path.open("rb") as stream:
+                    while chunk := stream.read(64 * 1024):
+                        self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def proxy_youtube_with_ytdlp(self, cached, download_requested=False):
         page_url = cached.get("page_url") or cached.get("url")
