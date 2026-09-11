@@ -1041,14 +1041,43 @@ def _pinterest_image_from_node(node):
 
 
 def _pinterest_video_from_node(node):
+    """Localiza vídeo mesmo quando o Pinterest o aninha em videoData/blocks.
+
+    Alguns Pins de vídeo não expõem `videos` diretamente no objeto principal.
+    A capa continua em `images`, enquanto os MP4s ficam em estruturas como
+    `storyPinData.pages[].blocks[].videoData.videoList*`. Por isso a busca de
+    vídeo precisa ser recursiva, assim como já fazemos com a imagem.
+    """
     if not isinstance(node, dict):
         return None
-    for key in ("videos", "video", "video_list", "videoList", "video_urls", "videoUrls"):
+
+    # Primeiro prioriza os campos conhecidos de vídeo do Pinterest.
+    for key in (
+        "videos", "video", "video_data", "videoData",
+        "video_list", "videoList", "video_urls", "videoUrls",
+        "video_list_1080p", "videoList1080P",
+        "video_list_720p", "videoList720P",
+        "video_list_mobile", "videoListMobile",
+    ):
         value = node.get(key)
         if isinstance(value, (dict, list)):
             video = _pinterest_best_video(value)
             if video:
                 return video
+
+    # Pins/Idea Pins podem esconder videoData vários níveis abaixo.
+    for child in node.values():
+        if isinstance(child, dict):
+            video = _pinterest_video_from_node(child)
+            if video:
+                return video
+        elif isinstance(child, list):
+            for item in child:
+                if isinstance(item, dict):
+                    video = _pinterest_video_from_node(item)
+                    if video:
+                        return video
+
     return None
 
 
