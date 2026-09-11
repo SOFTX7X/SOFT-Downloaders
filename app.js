@@ -18,7 +18,7 @@ const DEFAULT_NOTE = 'Aceita links diretos para arquivos públicos: MP4, WebM, M
 const WORKER_MEDIA_HOST = 'api.forgeaioficial.online';
 
 function hasWorkerProxy(data) {
-  if (!data || data.source !== 'tiktok') return true;
+  if (!data || !['tiktok', 'youtube'].includes(data.source)) return true;
   if (data.proxy_id) return true;
   const items = Array.isArray(data.items) ? data.items : [];
   return items.length > 0 && items.every((item) => item && item.proxy_id);
@@ -152,10 +152,9 @@ function showResultError(message) {
 }
 
 function createPreview(data) {
-  // TikTok: use somente a capa na prévia. As URLs temporárias de vídeo do
-  // TikTok são mais instáveis no navegador e não precisam participar do
-  // download, que continua sendo feito pelo worker via proxy_id.
-  if (data.source === 'tiktok' && data.type === 'video') {
+  // TikTok e YouTube usam somente a capa na prévia. O arquivo real é
+  // preparado pelo worker apenas quando o usuário pede o download.
+  if (['tiktok', 'youtube'].includes(data.source) && data.type === 'video') {
     if (!data.thumbnail) return createPreviewUnavailable();
     const image = document.createElement('img');
     image.src = data.thumbnail;
@@ -343,6 +342,6 @@ function proxyMediaUrl(url, source, proxyId, download = false) {
   if (!source || source === 'direct') return url;
   const suffix = download ? '&dl=1' : '';
   if (proxyId) return `https://${WORKER_MEDIA_HOST}/media?id=${encodeURIComponent(proxyId)}${suffix}`;
-  if (source === 'tiktok') return '';
+  if (source === 'tiktok' || source === 'youtube') return '';
   return `https://${WORKER_MEDIA_HOST}/media?url=${encodeURIComponent(url)}${suffix}`;
 }

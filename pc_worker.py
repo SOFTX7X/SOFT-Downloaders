@@ -32,6 +32,7 @@ from extract import (  # noqa: E402
     extract_instagram_embed,
     extract_instagram_post_image,
     normalize_media,
+    safe_filename,
 )
 from yt_dlp import YoutubeDL  # noqa: E402
 from yt_dlp.networking.impersonate import ImpersonateTarget  # noqa: E402
@@ -107,20 +108,22 @@ def cache_media(
     filename=None,
     tiktok_info=None,
     tiktok_cookiefile=None,
+    youtube_info=None,
 ):
     now = time.monotonic()
     token = secrets.token_urlsafe(24)
     info_path = None
 
-    if source == "tiktok" and tiktok_info:
+    info_payload = tiktok_info if source == "tiktok" else youtube_info if source == "youtube" else None
+    if info_payload:
         try:
             info_path = RUNTIME_CACHE_DIR / f"{token}.info.json"
             info_path.write_text(
-                json.dumps(tiktok_info, ensure_ascii=False),
+                json.dumps(info_payload, ensure_ascii=False),
                 encoding="utf-8",
             )
         except Exception as error:
-            print(f"Falha ao salvar info-json temporário do TikTok: {type(error).__name__}: {error}")
+            print(f"Falha ao salvar info-json temporário de {source}: {type(error).__name__}: {error}")
             info_path = None
 
     entry = {
@@ -190,25 +193,31 @@ def prepare_media_response(media, source_url):
 
     tiktok_info = media.pop("_tiktok_info", None)
     tiktok_cookiefile = media.pop("_tiktok_cookiefile", None)
+    youtube_info = media.pop("_youtube_info", None)
     items = media.get("items") if isinstance(media.get("items"), list) else []
     tiktok_cache_used = False
+    youtube_cache_used = False
 
     for item in items:
         if not item or not item.get("url"):
             continue
         item_source = item.get("source") or media.get("source")
         use_tiktok_bundle = item_source == "tiktok" and not tiktok_cache_used
+        use_youtube_bundle = item_source == "youtube" and not youtube_cache_used
         item["proxy_id"] = cache_media(
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source == "tiktok" else None,
+            page_url=source_url if item_source in ("tiktok", "youtube") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
+            youtube_info=youtube_info if use_youtube_bundle else None,
         )
         if use_tiktok_bundle:
             tiktok_cache_used = True
+        if use_youtube_bundle:
+            youtube_cache_used = True
         item.pop("http_headers", None)
 
     if items and media.get("url") == items[0].get("url"):
@@ -216,17 +225,21 @@ def prepare_media_response(media, source_url):
     elif media.get("url"):
         media_source = media.get("source")
         use_tiktok_bundle = media_source == "tiktok" and not tiktok_cache_used
+        use_youtube_bundle = media_source == "youtube" and not youtube_cache_used
         media["proxy_id"] = cache_media(
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source == "tiktok" else None,
+            page_url=source_url if media_source in ("tiktok", "youtube") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
+            youtube_info=youtube_info if use_youtube_bundle else None,
         )
         if use_tiktok_bundle:
             tiktok_cache_used = True
+        if use_youtube_bundle:
+            youtube_cache_used = True
 
     # Se por algum motivo o TikTok não gerou cache, não deixe cookie temporário órfão.
     if tiktok_cookiefile and not tiktok_cache_used:
@@ -319,8 +332,10 @@ def extract_media(source_url):
         return None, "Use um link público de Instagram, TikTok, YouTube ou Facebook."
 
     is_tiktok = "tiktok" in host
+    is_youtube = "youtube" in host or host == "youtu.be"
     tiktok_cookiefile = None
     tiktok_info = None
+    youtube_info = None
 
     if is_tiktok and curl_requests is not None:
         info, tiktok_info, tiktok_cookiefile = extract_tiktok_fast(source_url)
@@ -341,8 +356,12 @@ def extract_media(source_url):
         try:
             with YoutubeDL(options) as extractor:
                 info = extractor.extract_info(source_url, download=False)
+                if is_youtube and info:
+                    youtube_info = extractor.sanitize_info(info)
             media = normalize_carousel_media(info, host)
-        except Exception:
+        except Exception as error:
+            if is_youtube:
+                print(f"Falha na análise do YouTube: {type(error).__name__}: {error}")
             media = None
 
     # Fallback para publicação de foto única, quando o Instagram não retorna
@@ -370,15 +389,16 @@ def extract_media(source_url):
     if is_tiktok:
         media["_tiktok_info"] = tiktok_info
         media["_tiktok_cookiefile"] = tiktok_cookiefile
+    if is_youtube:
+        media["_youtube_info"] = youtube_info
     return media, None
 
 def normalize_youtube_media(info, host):
-    """YouTube sempre representa vídeo; thumbnail é apenas a capa da prévia.
+    """YouTube sempre representa vídeo; thumbnail é apenas a capa.
 
-    O yt-dlp pode devolver metadados sem ``url`` no nível principal quando a
-    seleção padrão aponta para streams separados. Para o fluxo por proxy do
-    SOFT Downloaders, preferimos o melhor formato progressivo (vídeo + áudio)
-    e nunca promovemos a thumbnail para arquivo baixável.
+    A maioria dos vídeos atuais entrega vídeo e áudio em streams separados.
+    Portanto não exigimos uma URL progressiva aqui: guardamos a página do
+    vídeo e deixamos o yt-dlp + FFmpeg preparar o MP4 somente no download.
     """
     if not info:
         return None
@@ -388,46 +408,40 @@ def normalize_youtube_media(info, host):
         if not entry:
             continue
 
-        # Se o yt-dlp já escolheu um arquivo de vídeo completo, use-o.
-        if entry.get("url") and str(entry.get("vcodec") or "none").lower() != "none":
-            item = normalize_media(entry, host)
-            if item and item.get("type") == "video":
-                return item
-
-        candidates = []
-        for fmt in entry.get("formats") or []:
-            if not isinstance(fmt, dict) or not fmt.get("url"):
-                continue
-            vcodec = str(fmt.get("vcodec") or "none").lower()
-            acodec = str(fmt.get("acodec") or "none").lower()
-            if vcodec == "none" or acodec == "none":
-                continue
-
-            ext = str(fmt.get("ext") or "").lower()
-            height = int(fmt.get("height") or 0)
-            tbr = float(fmt.get("tbr") or 0)
-            # MP4 tem a melhor compatibilidade para preview/download no navegador.
-            candidates.append((1 if ext == "mp4" else 0, height, tbr, fmt))
-
-        if not candidates:
+        has_video = str(entry.get("vcodec") or "none").lower() != "none"
+        if not has_video:
+            for fmt in entry.get("formats") or []:
+                if not isinstance(fmt, dict):
+                    continue
+                if str(fmt.get("vcodec") or "none").lower() != "none":
+                    has_video = True
+                    break
+        if not has_video:
             continue
 
-        candidates.sort(key=lambda item: item[:3], reverse=True)
-        selected_format = candidates[0][3]
-        selected = dict(entry)
-        selected.update(selected_format)
-        selected["thumbnail"] = entry.get("thumbnail")
-        selected["title"] = entry.get("title") or "Vídeo do YouTube"
-        selected["http_headers"] = (
-            selected_format.get("http_headers")
-            or entry.get("http_headers")
-            or {}
+        video_id = entry.get("id") or info.get("id")
+        page_url = (
+            entry.get("webpage_url")
+            or entry.get("original_url")
+            or info.get("webpage_url")
+            or info.get("original_url")
+            or (f"https://www.youtube.com/watch?v={video_id}" if video_id else None)
         )
-        item = normalize_media(selected, host)
-        if item:
-            item["source"] = "youtube"
-            item["type"] = "video"
-            return item
+        if not page_url:
+            continue
+
+        title = entry.get("title") or info.get("title") or "Vídeo do YouTube"
+        return {
+            "status": "ready",
+            "source": "youtube",
+            "type": "video",
+            "url": page_url,
+            "title": title,
+            "thumbnail": entry.get("thumbnail") or info.get("thumbnail"),
+            "filename": f"{safe_filename(title)}.mp4",
+            "media_count": 1,
+            "http_headers": entry.get("http_headers") or info.get("http_headers") or {},
+        }
 
     return None
 
@@ -556,6 +570,9 @@ class WorkerHandler(BaseHTTPRequestHandler):
         if source == "tiktok" and cached:
             return self.proxy_tiktok_with_ytdlp(cached, download_requested)
 
+        if source == "youtube" and cached:
+            return self.proxy_youtube_with_ytdlp(cached, download_requested)
+
         requested_range = self.headers.get("Range")
         if requested_range:
             headers["Range"] = requested_range
@@ -624,6 +641,81 @@ class WorkerHandler(BaseHTTPRequestHandler):
         except Exception as error:
             print(f"Falha no proxy {source or 'desconhecido'} via urllib: {type(error).__name__}: {error}")
             self.respond(502, {"error": "Não foi possível preparar este arquivo."})
+
+    def proxy_youtube_with_ytdlp(self, cached, download_requested=False):
+        page_url = cached.get("page_url") or cached.get("url")
+        info_path = cached.get("info_path")
+        filename = cached.get("filename") or "youtube-video.mp4"
+
+        if not download_requested:
+            # A interface usa a thumbnail como prévia do YouTube. Evita baixar e
+            # mesclar vídeo+áudio só para renderizar um preview.
+            return self.respond(415, {"error": "Prévia do YouTube usa a capa do vídeo."})
+
+        if not page_url and not (info_path and Path(info_path).is_file()):
+            return self.respond(410, {"error": "Este link expirou. Analise o vídeo novamente."})
+
+        format_selector = (
+            "bestvideo[ext=mp4][vcodec^=avc1][height<=720]+bestaudio[ext=m4a]/"
+            "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/"
+            "bestvideo[height<=720]+bestaudio/best[ext=mp4]/best"
+        )
+
+        with tempfile.TemporaryDirectory(prefix="soft-youtube-") as temp_dir:
+            output_template = str(Path(temp_dir) / "download.%(ext)s")
+
+            def run_download(use_info_json):
+                command = [
+                    sys.executable, "-m", "yt_dlp",
+                    "--quiet", "--no-warnings", "--no-progress", "--no-playlist",
+                    "-f", format_selector,
+                    "--merge-output-format", "mp4",
+                    "-o", output_template,
+                ]
+                if use_info_json and info_path and Path(info_path).is_file():
+                    command.extend(["--load-info-json", info_path])
+                elif page_url:
+                    command.append(page_url)
+                else:
+                    return None
+                return subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+            result = run_download(True)
+            if result is None or result.returncode != 0:
+                detail = (result.stderr if result else "").strip()
+                if detail:
+                    print(f"Falha no download YouTube via info-json: {detail[-1600:]}")
+                # URLs do info-json podem expirar. Fazemos uma única nova
+                # extração da página como fallback.
+                result = run_download(False)
+
+            if result is None or result.returncode != 0:
+                detail = (result.stderr if result else "").strip()
+                print(f"Falha no download YouTube via yt-dlp: {detail[-1600:]}")
+                return self.respond(502, {"error": "Não foi possível preparar este vídeo do YouTube."})
+
+            files = [path for path in Path(temp_dir).iterdir() if path.is_file()]
+            if not files:
+                return self.respond(502, {"error": "Não foi possível preparar este vídeo do YouTube."})
+            media_file = max(files, key=lambda path: path.stat().st_size)
+
+            self.send_response(200)
+            origin = self.headers.get("Origin")
+            if origin in ALLOWED_ORIGINS:
+                self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Content-Type", "video/mp4" if media_file.suffix.lower() == ".mp4" else "application/octet-stream")
+            self.send_header("Content-Length", str(media_file.stat().st_size))
+            self.send_header("Content-Disposition", content_disposition(filename))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+
+            try:
+                with media_file.open("rb") as stream:
+                    while chunk := stream.read(64 * 1024):
+                        self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def proxy_tiktok_with_ytdlp(self, cached, download_requested=False):
         info_path = cached.get("info_path")
