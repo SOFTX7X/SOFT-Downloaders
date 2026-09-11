@@ -216,11 +216,13 @@ function createPreview(data) {
     element.muted = true;
     element.loop = true;
     element.playsInline = true;
-    element.controls = true;
+    element.controls = false;
+    element.removeAttribute('controls');
     element.preload = 'auto';
     element.disablePictureInPicture = true;
+    element.disableRemotePlayback = true;
     if (data.thumbnail) element.poster = data.thumbnail;
-    element.setAttribute('controlsList', 'nodownload noremoteplayback');
+    element.setAttribute('controlsList', 'nodownload noremoteplayback nofullscreen');
     element.addEventListener('error', () => showPreviewFallback(data, element));
     element.addEventListener('canplay', () => {
       element.play().catch(() => {});
