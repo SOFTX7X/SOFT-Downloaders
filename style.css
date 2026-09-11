@@ -61,3 +61,16 @@ body.result-screen-open{overflow:hidden}
   .result-stage.carousel-mode{padding:24px 0 24px}
   .carousel-grid{width:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 }
+
+/* Carrossel: posiciona o próprio resultado no topo do palco, sem depender do alinhamento do pai. */
+.result-stage > .result.is-carousel{
+  align-self:start !important;
+  justify-self:center;
+  margin-top:32px !important;
+}
+
+@media (max-width:720px){
+  .result-stage > .result.is-carousel{
+    margin-top:20px !important;
+  }
+}
