@@ -8,6 +8,7 @@ const resultLoadingText = document.querySelector('#resultLoadingText');
 const resultError = document.querySelector('#resultError');
 const resultErrorText = document.querySelector('#resultErrorText');
 const result = document.querySelector('#result');
+const resultStage = document.querySelector('.result-stage');
 const preview = document.querySelector('#resultPreview');
 const downloadLink = document.querySelector('#downloadLink');
 const carouselItems = document.querySelector('#carouselItems');
@@ -93,6 +94,7 @@ form.addEventListener('submit', async (event) => {
   const isCarousel = items.length > 1;
 
   result.classList.toggle('is-carousel', isCarousel);
+  resultStage.classList.toggle('carousel-mode', isCarousel);
   if (isCarousel) renderCarousel(items);
   else renderMedia(items[0]);
 
@@ -120,6 +122,7 @@ function closeResultScreen() {
 function resetResult() {
   result.hidden = true;
   result.classList.remove('is-carousel');
+  resultStage.classList.remove('carousel-mode');
   resultLoading.hidden = true;
   resultError.hidden = true;
   preview.replaceChildren();
