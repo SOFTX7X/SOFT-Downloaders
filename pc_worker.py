@@ -74,7 +74,29 @@ def clean_proxy_headers(headers):
 
 def content_disposition(filename):
     safe = Path(filename or "soft-download.mp4").name
-    return f"attachment; filename*=UTF-8''{quote(safe)}"
+    ascii_name = safe.encode("ascii", "ignore").decode("ascii").strip() or "soft-download.mp4"
+    ascii_name = ascii_name.replace('"', "").replace("\r", "").replace("\n", "")
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(safe)}"
+
+
+def download_content_type(filename):
+    extension = Path(filename or "").suffix.lower()
+    return {
+        ".mp4": "video/mp4",
+        ".m4v": "video/mp4",
+        ".mov": "video/quicktime",
+        ".webm": "video/webm",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".mp3": "audio/mpeg",
+        ".m4a": "audio/mp4",
+        ".aac": "audio/aac",
+        ".wav": "audio/wav",
+    }.get(extension)
+
 
 def default_proxy_headers(source):
     referers = {
@@ -655,12 +677,19 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 origin = self.headers.get("Origin")
                 if origin in ALLOWED_ORIGINS:
                     self.send_header("Access-Control-Allow-Origin", origin)
+                download_filename = cached.get("filename") if cached else None
+                forced_type = download_content_type(download_filename) if download_requested else None
                 for name in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+                    if name == "Content-Type" and forced_type:
+                        continue
                     value = upstream.headers.get(name)
                     if value:
                         self.send_header(name, value)
+                if forced_type:
+                    self.send_header("Content-Type", forced_type)
                 if download_requested:
-                    self.send_header("Content-Disposition", content_disposition(cached.get("filename") if cached else None))
+                    self.send_header("Content-Disposition", content_disposition(download_filename))
+                    self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 for chunk in upstream.iter_content():
@@ -682,11 +711,18 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 origin = self.headers.get("Origin")
                 if origin in ALLOWED_ORIGINS:
                     self.send_header("Access-Control-Allow-Origin", origin)
+                download_filename = cached.get("filename") if cached else None
+                forced_type = download_content_type(download_filename) if download_requested else None
                 for name in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+                    if name == "Content-Type" and forced_type:
+                        continue
                     if upstream.headers.get(name):
                         self.send_header(name, upstream.headers[name])
+                if forced_type:
+                    self.send_header("Content-Type", forced_type)
                 if download_requested:
-                    self.send_header("Content-Disposition", content_disposition(cached.get("filename") if cached else None))
+                    self.send_header("Content-Disposition", content_disposition(download_filename))
+                    self.send_header("X-Content-Type-Options", "nosniff")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 while chunk := upstream.read(64 * 1024):
