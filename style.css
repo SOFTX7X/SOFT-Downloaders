@@ -17,12 +17,12 @@ h1,h2 { margin:0; font-family:"Manrope",sans-serif; letter-spacing:-2.2px; } h1 
   .hero h1{white-space:nowrap;font-size:clamp(28px,8.1vw,34px);letter-spacing:-1.5px}
   .hero-copy{margin-top:18px;margin-bottom:22px;font-size:16px}
   .media-types{margin-bottom:22px}
-  .download-form{max-width:560px;padding:0;border:0;border-radius:0;box-shadow:none;background:transparent;grid-template-columns:minmax(0,1fr) 46px;gap:10px 0}
-  .download-form input{width:100%;padding:14px 13px;border:1px solid var(--ink);border-radius:13px 0 0 13px;background:#fff}
+  .download-form{max-width:560px;padding:0;border:0;border-radius:0;box-shadow:none;background:transparent;grid-template-columns:minmax(0,1fr);gap:10px;position:relative}
+  .download-form input{width:100%;box-sizing:border-box;padding:14px 50px 14px 13px;border:1px solid var(--ink);border-radius:13px;background:#fff}
   .paste-button{display:none}
-  .clear-button{display:grid;place-items:center;border:1px solid var(--ink);border-left:0;border-radius:0 13px 13px 0;background:#fff;color:var(--muted)}
-  .clear-button:hover{color:var(--ink)}
-  .download-button{grid-column:1 / -1;justify-self:center;min-width:154px;margin:0;padding:13px 24px}
+  .clear-button{display:grid;place-items:center;position:absolute;top:5px;right:7px;width:38px;height:38px;padding:0;border:0;border-radius:50%;background:transparent;color:var(--muted);z-index:2}
+  .clear-button:hover{color:var(--ink);background:rgba(23,33,42,.05)}
+  .download-button{grid-column:1;justify-self:center;min-width:154px;margin:0;padding:13px 24px}
   .form-note{margin-top:11px}
   .steps,.formats,.faq{padding:66px 20px}.steps ol{grid-template-columns:1fr;gap:25px}
 }
