@@ -153,6 +153,7 @@ function createPreview(data) {
     element.controls = true;
     element.preload = 'auto';
     element.disablePictureInPicture = true;
+    if (data.thumbnail) element.poster = data.thumbnail;
     element.setAttribute('controlsList', 'nodownload noremoteplayback');
     element.addEventListener('error', () => showPreviewFallback(data, element));
     element.addEventListener('canplay', () => {

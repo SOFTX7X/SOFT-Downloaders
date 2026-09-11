@@ -147,6 +147,40 @@ def get_cached_media(token):
             return None
         return {**entry, "headers": dict(entry["headers"])}
 
+def select_browser_safe_tiktok_format(info_path):
+    """Escolhe um MP4 H.264 + áudio que navegadores reproduzem sem HEVC."""
+    if not info_path or not Path(info_path).is_file():
+        return None
+    try:
+        info = json.loads(Path(info_path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    candidates = []
+    for fmt in info.get("formats") or []:
+        if not isinstance(fmt, dict) or not fmt.get("format_id"):
+            continue
+        if str(fmt.get("ext") or "").lower() != "mp4":
+            continue
+        vcodec = str(fmt.get("vcodec") or "none").lower()
+        acodec = str(fmt.get("acodec") or "none").lower()
+        if acodec == "none" or vcodec == "none":
+            continue
+        if not (vcodec.startswith("h264") or vcodec.startswith("avc")):
+            continue
+
+        height = fmt.get("height") or 0
+        tbr = fmt.get("tbr") or 0
+        # Até 720p deixa a prévia leve; se só existir H.264 maior, ainda funciona.
+        preferred = 1 if height and height <= 720 else 0
+        candidates.append((preferred, height, tbr, str(fmt["format_id"])))
+
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][3]
+
+
 def prepare_media_response(media, source_url):
     if not media:
         return media
@@ -458,11 +492,24 @@ class WorkerHandler(BaseHTTPRequestHandler):
         page_url = cached.get("page_url")
         filename = cached.get("filename")
 
+        browser_safe_format = select_browser_safe_tiktok_format(info_path)
+        if not download_requested and not browser_safe_format:
+            # Sem H.264 o navegador pode tocar apenas o áudio e mostrar um quadro vazio.
+            # Retornar erro faz o frontend manter a capa em vez de exibir uma prévia quebrada.
+            return self.respond(415, {"error": "Prévia de vídeo indisponível para este formato."})
+
+        format_selector = (
+            browser_safe_format
+            or "best[ext=mp4][vcodec^=h264][acodec!=none][height<=720]/"
+               "best[ext=mp4][vcodec^=h264][acodec!=none]/"
+               "best[ext=mp4][acodec!=none]/best[ext=mp4]/best"
+        )
+
         command = [
             sys.executable, "-m", "yt_dlp",
             "--quiet", "--no-warnings", "--no-progress", "--no-playlist",
             "--impersonate", "chrome",
-            "-f", "best[ext=mp4][height<=720][acodec!=none]/best[ext=mp4][acodec!=none]/best[ext=mp4]/best",
+            "-f", format_selector,
             "-o", "-",
         ]
 
