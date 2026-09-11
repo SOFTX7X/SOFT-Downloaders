@@ -234,7 +234,7 @@ function renderMedia(data) {
   carouselItems.replaceChildren();
   downloadLink.hidden = false;
   downloadLink.href = '#';
-  downloadLink.textContent = downloadLabelForType(data.type);
+  downloadLink.textContent = downloadLabelForMedia(data);
   downloadLink.dataset.mode = 'single';
   downloadLink.dataset.mediaUrl = proxyMediaUrl(data.url, data.source, data.proxy_id, true);
   downloadLink.dataset.filename = data.filename || 'soft-download';
@@ -280,7 +280,26 @@ function renderCarousel(items) {
   delete downloadLink.dataset.filename;
 }
 
-function downloadLabelForType(type) {
+function mediaTypeForDownload(data) {
+  if (!data) return 'media';
+
+  // TikTok e YouTube são sempre tratados como vídeo; a imagem mostrada na
+  // prévia é apenas a capa e não deve mudar o texto do botão.
+  if (data.source === 'tiktok' || data.source === 'youtube') return 'video';
+
+  const filename = String(data.filename || '').toLowerCase();
+  const url = String(data.url || '').toLowerCase();
+
+  if (/\.(mp4|webm|mov|m4v)(?:$|[?#])/.test(filename) || /mime_type=video/.test(url)) return 'video';
+  if (/\.(mp3|m4a|aac|wav|ogg|opus)(?:$|[?#])/.test(filename)) return 'audio';
+  if (/\.(jpe?g|png|webp|gif|avif)(?:$|[?#])/.test(filename)) return 'image';
+
+  if (data.type === 'video' || data.type === 'audio' || data.type === 'image') return data.type;
+  return 'media';
+}
+
+function downloadLabelForMedia(data) {
+  const type = mediaTypeForDownload(data);
   if (type === 'image') return 'BAIXAR FOTO';
   if (type === 'video') return 'BAIXAR VÍDEO';
   if (type === 'audio') return 'BAIXAR ÁUDIO';
