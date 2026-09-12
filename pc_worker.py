@@ -449,6 +449,61 @@ def extract_dailymotion_cli(source_url):
         return None
 
 
+def resolve_dailymotion_stream_cli(source_url, selector="best[height<=720]/best"):
+    """Resolve rapidamente a faixa HLS selecionada e os headers do Dailymotion.
+
+    O download final usa essa URL apenas para iniciar um fluxo FFmpeg -> navegador;
+    assim o navegador começa a receber bytes sem esperar o vídeo inteiro ser
+    baixado em arquivo temporário primeiro.
+    """
+    command = [
+        sys.executable, "-m", "yt_dlp",
+        "--dump-single-json", "--skip-download",
+        "--no-warnings", "--no-playlist",
+        "--impersonate", "chrome",
+        "-f", selector,
+        source_url,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=45,
+        )
+    except subprocess.TimeoutExpired:
+        print("Falha ao resolver stream Dailymotion: tempo limite excedido")
+        return None, {}
+
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip()
+        if detail:
+            print(f"Falha ao resolver stream Dailymotion: {detail[-1600:]}")
+        return None, {}
+
+    try:
+        info = json.loads(result.stdout)
+    except Exception as error:
+        print(f"Falha ao interpretar stream Dailymotion: {type(error).__name__}: {error}")
+        return None, {}
+
+    if isinstance(info, dict) and isinstance(info.get("entries"), list):
+        info = next((entry for entry in info["entries"] if isinstance(entry, dict)), info)
+
+    media_url = info.get("url") if isinstance(info, dict) else None
+    headers = clean_proxy_headers(info.get("http_headers") or {}) if isinstance(info, dict) else {}
+
+    # Alguns extratores deixam a seleção dentro de requested_formats.
+    if not media_url and isinstance(info, dict):
+        requested = info.get("requested_formats") or []
+        if len(requested) == 1 and isinstance(requested[0], dict):
+            media_url = requested[0].get("url")
+            headers = clean_proxy_headers(requested[0].get("http_headers") or headers)
+
+    return media_url, headers
+
+
 def extract_media(source_url):
     parsed = urlparse(source_url)
     host = parsed.hostname.lower().removeprefix("www.") if parsed.hostname else ""
@@ -2945,6 +3000,105 @@ class WorkerHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def stream_dailymotion_download(self, page_url, filename):
+        """Entrega Dailymotion em fluxo contínuo, sem pré-baixar o arquivo todo.
+
+        Vídeos HLS do Dailymotion podem ter centenas de MB. Antes o worker
+        baixava o vídeo inteiro para um temporário e só depois respondia ao
+        navegador; isso parecia um download travado. Aqui o yt-dlp resolve a
+        faixa e o FFmpeg remuxa para MP4 fragmentado enquanto envia os bytes.
+        """
+        media_url, headers = resolve_dailymotion_stream_cli(page_url)
+        if not media_url:
+            return self.respond(502, {"error": "Não foi possível preparar este vídeo do Dailymotion."})
+
+        ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+        command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
+
+        user_agent = headers.get("User-Agent") or headers.get("user-agent")
+        referer = headers.get("Referer") or headers.get("referer") or "https://www.dailymotion.com/"
+        if user_agent:
+            command.extend(["-user_agent", user_agent])
+        if referer:
+            command.extend(["-referer", referer])
+
+        extra_headers = []
+        for name, value in headers.items():
+            if name.lower() in ("user-agent", "referer"):
+                continue
+            extra_headers.append(f"{name}: {value}\r\n")
+        if extra_headers:
+            command.extend(["-headers", "".join(extra_headers)])
+
+        command.extend([
+            "-i", media_url,
+            "-map", "0:v:0?", "-map", "0:a:0?",
+            "-c", "copy",
+            "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+            "-f", "mp4",
+            "pipe:1",
+        ])
+
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+
+        try:
+            first_chunk = process.stdout.read(64 * 1024) if process.stdout else b""
+            if not first_chunk:
+                stderr = process.stderr.read().decode("utf-8", "replace") if process.stderr else ""
+                process.wait(timeout=5)
+                if stderr:
+                    print(f"Falha no streaming Dailymotion via FFmpeg: {stderr[-1600:]}")
+                return self.respond(502, {"error": "Não foi possível iniciar o download do Dailymotion."})
+
+            self.send_response(200)
+            origin = self.headers.get("Origin")
+            if origin in ALLOWED_ORIGINS:
+                self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Disposition", content_disposition(filename))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-store")
+            # Sem Content-Length: o arquivo ainda está sendo produzido. O fim da
+            # conexão marca o fim do download e permite começar imediatamente.
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+
+            self.wfile.write(first_chunk)
+            self.wfile.flush()
+            if process.stdout:
+                while True:
+                    chunk = process.stdout.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+
+            return_code = process.wait()
+            if return_code != 0:
+                stderr = process.stderr.read().decode("utf-8", "replace") if process.stderr else ""
+                if stderr:
+                    print(f"Streaming Dailymotion terminou com erro: {stderr[-1600:]}")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+
     def proxy_dailymotion_with_ytdlp(self, cached, download_requested=False):
         page_url = cached.get("page_url") or cached.get("url")
         info_path = cached.get("info_path")
@@ -2954,11 +3108,15 @@ class WorkerHandler(BaseHTTPRequestHandler):
         if not page_url and not (info_path and Path(info_path).is_file()):
             return self.respond(410, {"error": "Este link expirou. Analise o vídeo novamente."})
 
-        # A prévia usa somente um trecho curto e leve. Dailymotion costuma
-        # fornecer HLS; preparar alguns segundos em MP4 evita depender de
-        # suporte HLS nativo do Chrome/Android WebView.
+        # No download final, não esperamos centenas de MB serem baixados antes
+        # de responder. O fluxo começa assim que o FFmpeg produz o primeiro
+        # fragmento MP4.
+        if download_requested and page_url:
+            return self.stream_dailymotion_download(page_url, filename)
+
+        # A prévia continua curta e leve, pois é pequena e pode ser preparada em
+        # arquivo temporário sem atrasar o usuário.
         preview_selector = "best[height<=480]/worst"
-        download_selector = "best[height<=720]/best"
 
         with tempfile.TemporaryDirectory(prefix="soft-dailymotion-") as temp_dir:
             output_template = str(Path(temp_dir) / "download.%(ext)s")
@@ -2968,13 +3126,12 @@ class WorkerHandler(BaseHTTPRequestHandler):
                     sys.executable, "-m", "yt_dlp",
                     "--quiet", "--no-warnings", "--no-progress", "--no-playlist",
                     "--impersonate", "chrome",
-                    "-f", download_selector if download_requested else preview_selector,
+                    "-f", preview_selector,
                     "--merge-output-format", "mp4",
                     "--remux-video", "mp4",
                     "-o", output_template,
+                    "--download-sections", "*0-12",
                 ]
-                if not download_requested:
-                    command.extend(["--download-sections", "*0-12"])
                 if use_info_json and info_path and Path(info_path).is_file():
                     command.extend(["--load-info-json", info_path])
                 elif page_url:
@@ -2989,12 +3146,12 @@ class WorkerHandler(BaseHTTPRequestHandler):
             if result is None or result.returncode != 0:
                 detail = (result.stderr if result else "").strip()
                 if detail:
-                    print(f"Falha no {'download' if download_requested else 'preview'} Dailymotion via info-json: {detail[-1600:]}")
+                    print(f"Falha no preview Dailymotion via info-json: {detail[-1600:]}")
                 result = run_download(False)
 
             if result is None or result.returncode != 0:
                 detail = (result.stderr if result else "").strip()
-                print(f"Falha no {'download' if download_requested else 'preview'} Dailymotion via yt-dlp: {detail[-1600:]}")
+                print(f"Falha no preview Dailymotion via yt-dlp: {detail[-1600:]}")
                 return self.respond(502, {
                     "error": "Não foi possível preparar este vídeo do Dailymotion."
                 })
@@ -3009,17 +3166,13 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 return self.respond(502, {"error": "Não foi possível preparar este vídeo do Dailymotion."})
 
             media_file = max(files, key=lambda path: path.stat().st_size)
-            if download_requested:
-                return self.send_local_download(media_file, filename, "video/mp4")
-
             self.send_response(200)
             origin = self.headers.get("Origin")
             if origin in ALLOWED_ORIGINS:
                 self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Content-Type", "video/mp4")
             self.send_header("Content-Length", str(media_file.stat().st_size))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "private, max-age=300")
             self.end_headers()
             try:
                 with media_file.open("rb") as stream:
