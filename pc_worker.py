@@ -2342,10 +2342,12 @@ def extract_threads_public_media(source_url):
         # único MP4, para não confundir o post com recomendações/replies.
         raw_mp4 = _threads_raw_mp4_urls(current_page)
         page_title = _threads_meta_value(current_page, 'og:title', 'twitter:title') or ''
+        # `error=invalid_post` também aparece dentro do JavaScript genérico do
+        # Threads em páginas válidas. Só tratamos como bloqueio quando o erro
+        # está na URL final ou quando o título/meta indica tela de login.
         login_wall = bool(
-            re.search(r'(threads\s*[•|-]?\s*(entrar|log\s*in)|error=invalid_post)', current_page, re.IGNORECASE)
-            or re.search(r'(entrar|log\s*in)', page_title, re.IGNORECASE)
-            or 'error=invalid_post' in str(current_url)
+            re.search(r'(threads\s*[•|-]?\s*(entrar|log\s*in)|^(entrar|log\s*in)$)', page_title.strip(), re.IGNORECASE)
+            or 'error=invalid_post' in str(current_url).lower()
         )
         if not login_wall and 'video_versions' in current_page and len(raw_mp4) == 1:
             title = page_title or 'Vídeo do Threads'
