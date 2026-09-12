@@ -2210,6 +2210,7 @@ def extract_threads_public_media(source_url):
     )
 
     posts = []
+    payloads = []
     for block in re.findall(r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>', page, re.IGNORECASE | re.DOTALL):
         payload = None
         for candidate in (block.strip(), html_unescape(block.strip())):
@@ -2221,12 +2222,59 @@ def extract_threads_public_media(source_url):
             except Exception:
                 continue
         if payload is not None:
+            payloads.append(payload)
             _threads_collect_posts(payload, posts)
 
     if target_code:
         post = next((item for item in posts if str(item.get('code') or '') == target_code), None)
         if post is None:
-            return None
+            # Alguns posts públicos não repetem o shortcode dentro do JSON.
+            # Nessa variação o HTML ainda contém o vídeo real em video_versions.
+            # Aceitamos o fallback somente quando há exatamente UM vídeo real
+            # único na página, evitando capturar reply/recomendação por engano.
+            fallback_nodes = []
+
+            def collect_unique_video_nodes(value):
+                if isinstance(value, dict):
+                    video_url = _threads_video_candidate(value)
+                    if video_url:
+                        fallback_nodes.append(value)
+                    for child in value.values():
+                        if isinstance(child, (dict, list)):
+                            collect_unique_video_nodes(child)
+                elif isinstance(value, list):
+                    for child in value:
+                        collect_unique_video_nodes(child)
+
+            for payload in payloads:
+                collect_unique_video_nodes(payload)
+
+            unique_fallback = []
+            seen_fallback = set()
+            for media_node in fallback_nodes:
+                video_url = _threads_video_candidate(media_node)
+                if not video_url:
+                    continue
+                marker = str(media_node.get('pk') or media_node.get('id') or '')
+                if not marker:
+                    marker = video_url.split('?', 1)[0]
+                if marker in seen_fallback:
+                    continue
+                seen_fallback.add(marker)
+                unique_fallback.append(media_node)
+
+            if len(unique_fallback) != 1:
+                return None
+
+            media_node = unique_fallback[0]
+            title = _threads_meta_value(page, 'og:title') or 'Mídia do Threads'
+            item = _threads_make_item(media_node, target_code, 1, title)
+            if not item:
+                return None
+            primary = dict(item)
+            primary['items'] = [item]
+            primary['media_count'] = 1
+            return primary
     else:
         # Sem um shortcode confiável, só aceitamos quando existe exatamente um
         # post com mídia na página. Isso evita baixar recomendação/reply errado.
