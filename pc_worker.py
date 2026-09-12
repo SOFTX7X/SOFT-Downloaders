@@ -3923,6 +3923,45 @@ class WorkerHandler(BaseHTTPRequestHandler):
                     pass
                 return
 
+        # Clips da Kick chegam em HLS (m3u8). Para o download final,
+        # primeiro remuxamos todo o clip para um MP4 normal em arquivo temporário.
+        # Isso evita entregar um MP4 fragmentado via pipe, que alguns players do
+        # Windows/Android interpretam como arquivo inválido ou corrompido.
+        if platform == "Kick":
+            with tempfile.TemporaryDirectory(prefix="soft-kick-download-") as temp_dir:
+                output_path = Path(temp_dir) / "kick-clip.mp4"
+                command = self.run_twitch_ffmpeg(media_url, headers, str(output_path))
+                result = subprocess.run(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                if result.returncode != 0 or not output_path.is_file() or output_path.stat().st_size == 0:
+                    detail = (result.stderr or "").strip()
+                    if detail:
+                        print(f"Falha no download {platform} via FFmpeg: {detail[-1600:]}")
+                    return self.respond(502, {"error": f"Não foi possível preparar este vídeo da {platform}."})
+
+                self.send_response(200)
+                origin = self.headers.get("Origin")
+                if origin in ALLOWED_ORIGINS:
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Length", str(output_path.stat().st_size))
+                self.send_header("Content-Disposition", content_disposition(filename))
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                try:
+                    with output_path.open("rb") as stream:
+                        while chunk := stream.read(64 * 1024):
+                            self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+
         command = self.run_twitch_ffmpeg(media_url, headers, "pipe:1")
         process = subprocess.Popen(
             command,
