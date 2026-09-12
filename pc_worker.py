@@ -116,6 +116,7 @@ def default_proxy_headers(source):
         "soundcloud": "https://soundcloud.com/",
         "linkedin": "https://www.linkedin.com/",
         "twitch": "https://www.twitch.tv/",
+        "kick": "https://kick.com/",
     }
     return {
         "User-Agent": "Mozilla/5.0",
@@ -274,7 +275,7 @@ def prepare_media_response(media, source_url):
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "linkedin", "twitch") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "linkedin", "twitch", "kick") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -312,7 +313,7 @@ def prepare_media_response(media, source_url):
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "linkedin", "twitch") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "linkedin", "twitch", "kick") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -526,7 +527,7 @@ def extract_media(source_url):
     if parsed.scheme not in ("http", "https") or not any(
         host == item or host.endswith("." + item) for item in ALLOWED_HOSTS
     ):
-        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai, Dailymotion, SoundCloud, LinkedIn ou Twitch."
+        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai, Dailymotion, SoundCloud, LinkedIn, Twitch ou Kick."
 
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
@@ -546,6 +547,7 @@ def extract_media(source_url):
     is_soundcloud = host == "soundcloud.com" or host.endswith(".soundcloud.com")
     is_linkedin = host == "linkedin.com" or host.endswith(".linkedin.com")
     is_twitch = host == "twitch.tv" or host.endswith(".twitch.tv")
+    is_kick = host == "kick.com" or host.endswith(".kick.com")
     tiktok_cookiefile = None
     tiktok_info = None
     youtube_info = None
@@ -553,6 +555,12 @@ def extract_media(source_url):
     dailymotion_info = None
     facebook_info = None
     twitch_info = None
+
+    # A integração atual da Kick é intencionalmente limitada a Clips.
+    # VODs estão retornando 404 no extrator oficial do yt-dlp no momento,
+    # então bloqueamos outros tipos de link para não prometer suporte instável.
+    if is_kick and "/clips/" not in parsed.path.lower():
+        return None, "No momento, a Kick é compatível somente com Clips públicos."
 
     # Kwai usa links curtos com redirecionamento e expõe a mídia pública
     # em metadados/JSON da própria página. Tentamos esse caminho antes do
@@ -661,6 +669,8 @@ def extract_media(source_url):
                 print(f"Falha na análise do SoundCloud: {type(error).__name__}: {error}")
             elif is_twitch:
                 print(f"Falha na análise da Twitch: {type(error).__name__}: {error}")
+            elif is_kick:
+                print(f"Falha na análise da Kick: {type(error).__name__}: {error}")
             media = None
 
     # Fallback para publicação de foto única, quando o Instagram não retorna
@@ -3031,6 +3041,31 @@ def normalize_carousel_media(info, host, sanitized_info=None):
         primary["media_count"] = 1
         return primary
 
+    if host == "kick.com" or host.endswith(".kick.com"):
+        raw_items = info.get("entries") if info.get("entries") else [info]
+        entry = next((value for value in raw_items if isinstance(value, dict)), None)
+        if not entry:
+            return None
+        title = entry.get("title") or info.get("title") or "Clip da Kick"
+        clip_id = entry.get("id") or info.get("id") or "clip"
+        page_url = (
+            entry.get("webpage_url") or entry.get("original_url")
+            or info.get("webpage_url") or info.get("original_url")
+        )
+        if not page_url:
+            return None
+        item = {
+            "status": "ready", "source": "kick", "type": "video",
+            "url": page_url, "title": title,
+            "thumbnail": entry.get("thumbnail") or info.get("thumbnail"),
+            "filename": f"kick-{clip_id}.mp4", "media_count": 1,
+            "http_headers": entry.get("http_headers") or info.get("http_headers") or {},
+        }
+        primary = dict(item)
+        primary["items"] = [item]
+        primary["media_count"] = 1
+        return primary
+
     raw_items = info.get("entries") if info.get("entries") else [info]
     safe_items = []
     if sanitized_info:
@@ -3166,6 +3201,11 @@ class WorkerHandler(BaseHTTPRequestHandler):
 
         if source == "twitch" and cached:
             return self.proxy_twitch_with_ytdlp(cached, download_requested)
+
+        if source == "kick" and cached:
+            return self.proxy_twitch_with_ytdlp(
+                cached, download_requested, platform="Kick", fallback_referer="https://kick.com/"
+            )
 
         # A prévia do Instagram continua usando a URL direta para ser rápida.
         # No download final de vídeo, usamos o yt-dlp + FFmpeg para preferir um
@@ -3830,9 +3870,12 @@ class WorkerHandler(BaseHTTPRequestHandler):
             command.extend(["-movflags", "+faststart", "-y", output])
         return command
 
-    def proxy_twitch_with_ytdlp(self, cached, download_requested=False):
+    def proxy_twitch_with_ytdlp(
+        self, cached, download_requested=False, platform="Twitch", fallback_referer="https://www.twitch.tv/"
+    ):
         page_url = cached.get("page_url") or cached.get("url")
-        filename = str(Path(cached.get("filename") or "twitch-video.mp4").with_suffix(".mp4"))
+        default_name = "kick-clip.mp4" if platform == "Kick" else "twitch-video.mp4"
+        filename = str(Path(cached.get("filename") or default_name).with_suffix(".mp4"))
         if not page_url:
             return self.respond(410, {"error": "Este link expirou. Analise o vídeo novamente."})
 
@@ -3842,7 +3885,10 @@ class WorkerHandler(BaseHTTPRequestHandler):
         )
         media_url, headers = self.resolve_twitch_stream(page_url, selector)
         if not media_url:
-            return self.respond(502, {"error": "Não foi possível preparar este vídeo da Twitch."})
+            return self.respond(502, {"error": f"Não foi possível preparar este vídeo da {platform}."})
+        headers = dict(headers or {})
+        if not headers.get("Referer") and not headers.get("referer"):
+            headers["Referer"] = fallback_referer
 
         if not download_requested:
             with tempfile.TemporaryDirectory(prefix="soft-twitch-preview-") as temp_dir:
@@ -3857,8 +3903,8 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 if result.returncode != 0 or not preview_path.is_file() or preview_path.stat().st_size == 0:
                     detail = (result.stderr or "").strip()
                     if detail:
-                        print(f"Falha na prévia Twitch via FFmpeg: {detail[-1600:]}")
-                    return self.respond(502, {"error": "Não foi possível preparar a prévia deste vídeo da Twitch."})
+                        print(f"Falha na prévia {platform} via FFmpeg: {detail[-1600:]}")
+                    return self.respond(502, {"error": f"Não foi possível preparar a prévia deste vídeo da {platform}."})
 
                 self.send_response(200)
                 origin = self.headers.get("Origin")
@@ -3891,8 +3937,8 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 stderr = process.stderr.read().decode("utf-8", "replace") if process.stderr else ""
                 process.wait(timeout=5)
                 if stderr:
-                    print(f"Falha no streaming Twitch via FFmpeg: {stderr[-1600:]}")
-                return self.respond(502, {"error": "Não foi possível iniciar o download da Twitch."})
+                    print(f"Falha no streaming {platform} via FFmpeg: {stderr[-1600:]}")
+                return self.respond(502, {"error": f"Não foi possível iniciar o download da {platform}."})
 
             self.send_response(200)
             origin = self.headers.get("Origin")
@@ -3920,7 +3966,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
             if return_code != 0:
                 stderr = process.stderr.read().decode("utf-8", "replace") if process.stderr else ""
                 if stderr:
-                    print(f"Streaming Twitch terminou com erro: {stderr[-1600:]}")
+                    print(f"Streaming {platform} terminou com erro: {stderr[-1600:]}")
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:

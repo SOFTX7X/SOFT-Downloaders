@@ -68,6 +68,12 @@ function identifySource(url) {
   if (host === 'twitch.tv' || host.endsWith('.twitch.tv')) {
     return pending('twitch', 'Vídeo ou clip público da Twitch identificado.');
   }
+  if (host === 'kick.com' || host.endsWith('.kick.com')) {
+    if (url.pathname.toLowerCase().includes('/clips/')) {
+      return pending('kick', 'Clip público da Kick identificado.');
+    }
+    return { status: 'unsupported', source: 'kick', message: 'No momento, a Kick é compatível somente com Clips públicos.' };
+  }
   return { status: 'unsupported', source: 'other', message: 'Este link não parece ser uma mídia direta nem uma plataforma compatível.' };
 }
 function pending(source, message) { return { status: 'pending', source, message }; }
