@@ -115,6 +115,7 @@ def default_proxy_headers(source):
         "dailymotion": "https://www.dailymotion.com/",
         "soundcloud": "https://soundcloud.com/",
         "linkedin": "https://www.linkedin.com/",
+        "twitch": "https://www.twitch.tv/",
     }
     return {
         "User-Agent": "Mozilla/5.0",
@@ -146,6 +147,7 @@ def cache_media(
     dailymotion_info=None,
     instagram_info=None,
     facebook_info=None,
+    twitch_info=None,
     item_index=None,
     media_type=None,
 ):
@@ -160,6 +162,7 @@ def cache_media(
         dailymotion_info if source == "dailymotion" else
         instagram_info if source == "instagram" else
         facebook_info if source == "facebook" else
+        twitch_info if source == "twitch" else
         None
     )
     if info_payload:
@@ -246,11 +249,13 @@ def prepare_media_response(media, source_url):
     vimeo_info = media.pop("_vimeo_info", None)
     dailymotion_info = media.pop("_dailymotion_info", None)
     facebook_info = media.pop("_facebook_info", None)
+    twitch_info = media.pop("_twitch_info", None)
     items = media.get("items") if isinstance(media.get("items"), list) else []
     tiktok_cache_used = False
     youtube_cache_used = False
     vimeo_cache_used = False
     dailymotion_cache_used = False
+    twitch_cache_used = False
 
     for item_index, item in enumerate(items, start=1):
         if not item or not item.get("url"):
@@ -260,6 +265,7 @@ def prepare_media_response(media, source_url):
         use_youtube_bundle = item_source == "youtube" and not youtube_cache_used
         use_vimeo_bundle = item_source == "vimeo" and not vimeo_cache_used
         use_dailymotion_bundle = item_source == "dailymotion" and not dailymotion_cache_used
+        use_twitch_bundle = item_source == "twitch" and not twitch_cache_used
         instagram_info = item.pop("_instagram_info", None) if item_source == "instagram" else None
         instagram_index = item.pop("_instagram_index", item_index) if item_source == "instagram" else None
         item_facebook_info = item.pop("_facebook_info", None) if item_source == "facebook" else None
@@ -268,7 +274,7 @@ def prepare_media_response(media, source_url):
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "linkedin") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "linkedin", "twitch") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -277,6 +283,7 @@ def prepare_media_response(media, source_url):
             dailymotion_info=dailymotion_info if use_dailymotion_bundle else None,
             instagram_info=instagram_info,
             facebook_info=item_facebook_info,
+            twitch_info=twitch_info if use_twitch_bundle else None,
             item_index=facebook_index if item_source == "facebook" else instagram_index,
             media_type=item.get("type"),
         )
@@ -288,6 +295,8 @@ def prepare_media_response(media, source_url):
             vimeo_cache_used = True
         if use_dailymotion_bundle:
             dailymotion_cache_used = True
+        if use_twitch_bundle:
+            twitch_cache_used = True
         item.pop("http_headers", None)
 
     if items and media.get("url") == items[0].get("url"):
@@ -298,11 +307,12 @@ def prepare_media_response(media, source_url):
         use_youtube_bundle = media_source == "youtube" and not youtube_cache_used
         use_vimeo_bundle = media_source == "vimeo" and not vimeo_cache_used
         use_dailymotion_bundle = media_source == "dailymotion" and not dailymotion_cache_used
+        use_twitch_bundle = media_source == "twitch" and not twitch_cache_used
         media["proxy_id"] = cache_media(
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "linkedin") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "linkedin", "twitch") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -311,6 +321,7 @@ def prepare_media_response(media, source_url):
             dailymotion_info=dailymotion_info if use_dailymotion_bundle else None,
             instagram_info=media.pop("_instagram_info", None) if media_source == "instagram" else None,
             facebook_info=media.pop("_facebook_info", facebook_info) if media_source == "facebook" else None,
+            twitch_info=twitch_info if use_twitch_bundle else None,
             item_index=(
                 media.pop("_facebook_index", 1) if media_source == "facebook" else
                 media.pop("_instagram_index", 1) if media_source == "instagram" else
@@ -326,6 +337,8 @@ def prepare_media_response(media, source_url):
             vimeo_cache_used = True
         if use_dailymotion_bundle:
             dailymotion_cache_used = True
+        if use_twitch_bundle:
+            twitch_cache_used = True
 
     # Se por algum motivo o TikTok não gerou cache, não deixe cookie temporário órfão.
     if tiktok_cookiefile and not tiktok_cache_used:
@@ -513,7 +526,7 @@ def extract_media(source_url):
     if parsed.scheme not in ("http", "https") or not any(
         host == item or host.endswith("." + item) for item in ALLOWED_HOSTS
     ):
-        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai, Dailymotion, SoundCloud ou LinkedIn."
+        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai, Dailymotion, SoundCloud, LinkedIn ou Twitch."
 
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
@@ -532,12 +545,14 @@ def extract_media(source_url):
     is_dailymotion = host == "dailymotion.com" or host.endswith(".dailymotion.com") or host == "dai.ly"
     is_soundcloud = host == "soundcloud.com" or host.endswith(".soundcloud.com")
     is_linkedin = host == "linkedin.com" or host.endswith(".linkedin.com")
+    is_twitch = host == "twitch.tv" or host.endswith(".twitch.tv")
     tiktok_cookiefile = None
     tiktok_info = None
     youtube_info = None
     vimeo_info = None
     dailymotion_info = None
     facebook_info = None
+    twitch_info = None
 
     # Kwai usa links curtos com redirecionamento e expõe a mídia pública
     # em metadados/JSON da própria página. Tentamos esse caminho antes do
@@ -628,6 +643,8 @@ def extract_media(source_url):
                     vimeo_info = extractor.sanitize_info(info)
                 if is_dailymotion and info:
                     dailymotion_info = extractor.sanitize_info(info)
+                if is_twitch and info:
+                    twitch_info = extractor.sanitize_info(info)
                 instagram_info = extractor.sanitize_info(info) if is_instagram and info else None
                 facebook_info = extractor.sanitize_info(info) if is_facebook and info else None
             media = normalize_carousel_media(
@@ -642,6 +659,8 @@ def extract_media(source_url):
                 print(f"Falha na análise do Dailymotion: {type(error).__name__}: {error}")
             elif is_soundcloud:
                 print(f"Falha na análise do SoundCloud: {type(error).__name__}: {error}")
+            elif is_twitch:
+                print(f"Falha na análise da Twitch: {type(error).__name__}: {error}")
             media = None
 
     # Fallback para publicação de foto única, quando o Instagram não retorna
@@ -704,6 +723,8 @@ def extract_media(source_url):
         media["_dailymotion_info"] = dailymotion_info
     if is_facebook and facebook_info:
         media["_facebook_info"] = facebook_info
+    if is_twitch and twitch_info:
+        media["_twitch_info"] = twitch_info
     return media, None
 
 def normalize_youtube_media(info, host):
@@ -2985,6 +3006,31 @@ def normalize_carousel_media(info, host, sanitized_info=None):
         primary["media_count"] = 1
         return primary
 
+    if host == "twitch.tv" or host.endswith(".twitch.tv"):
+        raw_items = info.get("entries") if info.get("entries") else [info]
+        entry = next((value for value in raw_items if isinstance(value, dict)), None)
+        if not entry:
+            return None
+        title = entry.get("title") or info.get("title") or "Vídeo da Twitch"
+        video_id = entry.get("id") or info.get("id") or "video"
+        page_url = (
+            entry.get("webpage_url") or entry.get("original_url")
+            or info.get("webpage_url") or info.get("original_url")
+        )
+        if not page_url:
+            return None
+        item = {
+            "status": "ready", "source": "twitch", "type": "video",
+            "url": page_url, "title": title,
+            "thumbnail": entry.get("thumbnail") or info.get("thumbnail"),
+            "filename": f"twitch-{video_id}.mp4", "media_count": 1,
+            "http_headers": entry.get("http_headers") or info.get("http_headers") or {},
+        }
+        primary = dict(item)
+        primary["items"] = [item]
+        primary["media_count"] = 1
+        return primary
+
     raw_items = info.get("entries") if info.get("entries") else [info]
     safe_items = []
     if sanitized_info:
@@ -3117,6 +3163,9 @@ class WorkerHandler(BaseHTTPRequestHandler):
 
         if source == "dailymotion" and cached:
             return self.proxy_dailymotion_with_ytdlp(cached, download_requested)
+
+        if source == "twitch" and cached:
+            return self.proxy_twitch_with_ytdlp(cached, download_requested)
 
         # A prévia do Instagram continua usando a URL direta para ser rápida.
         # No download final de vídeo, usamos o yt-dlp + FFmpeg para preferir um
@@ -3709,6 +3758,182 @@ class WorkerHandler(BaseHTTPRequestHandler):
                         self.wfile.write(chunk)
             except (BrokenPipeError, ConnectionResetError):
                 pass
+
+    def resolve_twitch_stream(self, page_url, selector):
+        command = [
+            sys.executable, "-m", "yt_dlp",
+            "--dump-single-json", "--skip-download",
+            "--no-warnings", "--no-playlist",
+            "--socket-timeout", "20", "--retries", "0",
+            "-f", selector,
+            page_url,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=45,
+            )
+        except subprocess.TimeoutExpired:
+            print("Falha ao resolver stream Twitch: tempo limite excedido")
+            return None, {}
+
+        if result.returncode != 0:
+            detail = (result.stderr or "").strip()
+            if detail:
+                print(f"Falha ao resolver stream Twitch: {detail[-1600:]}")
+            return None, {}
+
+        try:
+            info = json.loads(result.stdout)
+        except Exception as error:
+            print(f"Falha ao interpretar stream Twitch: {type(error).__name__}: {error}")
+            return None, {}
+
+        if isinstance(info, dict) and isinstance(info.get("entries"), list):
+            info = next((entry for entry in info["entries"] if isinstance(entry, dict)), info)
+
+        media_url = info.get("url") if isinstance(info, dict) else None
+        headers = clean_proxy_headers(info.get("http_headers") or {}) if isinstance(info, dict) else {}
+        return media_url, headers
+
+    def run_twitch_ffmpeg(self, media_url, headers, output, duration=None):
+        ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+        command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
+        user_agent = headers.get("User-Agent") or headers.get("user-agent")
+        referer = headers.get("Referer") or headers.get("referer") or "https://www.twitch.tv/"
+        if user_agent:
+            command.extend(["-user_agent", user_agent])
+        if referer:
+            command.extend(["-referer", referer])
+
+        extra_headers = []
+        for name, value in headers.items():
+            if name.lower() in ("user-agent", "referer"):
+                continue
+            extra_headers.append(f"{name}: {value}\r\n")
+        if extra_headers:
+            command.extend(["-headers", "".join(extra_headers)])
+
+        command.extend(["-i", media_url, "-map", "0:v:0?", "-map", "0:a:0?"])
+        if duration is not None:
+            command.extend(["-t", str(duration)])
+        command.extend(["-c", "copy"])
+        if output == "pipe:1":
+            command.extend([
+                "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                "-f", "mp4", "pipe:1",
+            ])
+        else:
+            command.extend(["-movflags", "+faststart", "-y", output])
+        return command
+
+    def proxy_twitch_with_ytdlp(self, cached, download_requested=False):
+        page_url = cached.get("page_url") or cached.get("url")
+        filename = str(Path(cached.get("filename") or "twitch-video.mp4").with_suffix(".mp4"))
+        if not page_url:
+            return self.respond(410, {"error": "Este link expirou. Analise o vídeo novamente."})
+
+        selector = (
+            "best[height<=1080]/best" if download_requested
+            else "best[height<=480]/worst"
+        )
+        media_url, headers = self.resolve_twitch_stream(page_url, selector)
+        if not media_url:
+            return self.respond(502, {"error": "Não foi possível preparar este vídeo da Twitch."})
+
+        if not download_requested:
+            with tempfile.TemporaryDirectory(prefix="soft-twitch-preview-") as temp_dir:
+                preview_path = Path(temp_dir) / "preview.mp4"
+                command = self.run_twitch_ffmpeg(media_url, headers, str(preview_path), duration=12)
+                result = subprocess.run(
+                    command,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                if result.returncode != 0 or not preview_path.is_file() or preview_path.stat().st_size == 0:
+                    detail = (result.stderr or "").strip()
+                    if detail:
+                        print(f"Falha na prévia Twitch via FFmpeg: {detail[-1600:]}")
+                    return self.respond(502, {"error": "Não foi possível preparar a prévia deste vídeo da Twitch."})
+
+                self.send_response(200)
+                origin = self.headers.get("Origin")
+                if origin in ALLOWED_ORIGINS:
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Length", str(preview_path.stat().st_size))
+                self.send_header("Cache-Control", "private, max-age=300")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                try:
+                    with preview_path.open("rb") as stream:
+                        while chunk := stream.read(64 * 1024):
+                            self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+
+        command = self.run_twitch_ffmpeg(media_url, headers, "pipe:1")
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+        try:
+            first_chunk = process.stdout.read(64 * 1024) if process.stdout else b""
+            if not first_chunk:
+                stderr = process.stderr.read().decode("utf-8", "replace") if process.stderr else ""
+                process.wait(timeout=5)
+                if stderr:
+                    print(f"Falha no streaming Twitch via FFmpeg: {stderr[-1600:]}")
+                return self.respond(502, {"error": "Não foi possível iniciar o download da Twitch."})
+
+            self.send_response(200)
+            origin = self.headers.get("Origin")
+            if origin in ALLOWED_ORIGINS:
+                self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Disposition", content_disposition(filename))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+
+            self.wfile.write(first_chunk)
+            self.wfile.flush()
+            if process.stdout:
+                while True:
+                    chunk = process.stdout.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+
+            return_code = process.wait()
+            if return_code != 0:
+                stderr = process.stderr.read().decode("utf-8", "replace") if process.stderr else ""
+                if stderr:
+                    print(f"Streaming Twitch terminou com erro: {stderr[-1600:]}")
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
 
     def proxy_vimeo_with_ytdlp(self, cached):
         page_url = cached.get("page_url") or cached.get("url")

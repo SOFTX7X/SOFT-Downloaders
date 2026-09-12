@@ -65,6 +65,9 @@ function identifySource(url) {
   if (host === 'linkedin.com' || host.endsWith('.linkedin.com')) {
     return pending('linkedin', 'Publicação pública do LinkedIn identificada.');
   }
+  if (host === 'twitch.tv' || host.endsWith('.twitch.tv')) {
+    return pending('twitch', 'Vídeo ou clip público da Twitch identificado.');
+  }
   return { status: 'unsupported', source: 'other', message: 'Este link não parece ser uma mídia direta nem uma plataforma compatível.' };
 }
 function pending(source, message) { return { status: 'pending', source, message }; }
