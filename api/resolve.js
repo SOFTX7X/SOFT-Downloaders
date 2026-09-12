@@ -65,6 +65,9 @@ function identifySource(url) {
   if (host === 'dailymotion.com' || host.endsWith('.dailymotion.com') || host === 'dai.ly') {
     return pending('dailymotion', 'Vídeo público do Dailymotion identificado.');
   }
+  if (host === 'soundcloud.com' || host.endsWith('.soundcloud.com')) {
+    return pending('soundcloud', 'Faixa pública do SoundCloud identificada.');
+  }
   return { status: 'unsupported', source: 'other', message: 'Este link não parece ser uma mídia direta nem uma plataforma compatível.' };
 }
 

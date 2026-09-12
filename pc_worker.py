@@ -112,6 +112,7 @@ def default_proxy_headers(source):
         "kwai": "https://www.kwai.com/",
         "vimeo": "https://vimeo.com/",
         "dailymotion": "https://www.dailymotion.com/",
+        "soundcloud": "https://soundcloud.com/",
     }
     return {
         "User-Agent": "Mozilla/5.0",
@@ -265,7 +266,7 @@ def prepare_media_response(media, source_url):
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "vimeo", "dailymotion") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "vimeo", "dailymotion", "soundcloud") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -299,7 +300,7 @@ def prepare_media_response(media, source_url):
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "vimeo", "dailymotion") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "vimeo", "dailymotion", "soundcloud") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -510,7 +511,7 @@ def extract_media(source_url):
     if parsed.scheme not in ("http", "https") or not any(
         host == item or host.endswith("." + item) for item in ALLOWED_HOSTS
     ):
-        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai, Vimeo ou Dailymotion."
+        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai, Vimeo, Dailymotion ou SoundCloud."
 
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
@@ -526,6 +527,7 @@ def extract_media(source_url):
     )
     is_vimeo = host == "vimeo.com" or host.endswith(".vimeo.com")
     is_dailymotion = host == "dailymotion.com" or host.endswith(".dailymotion.com") or host == "dai.ly"
+    is_soundcloud = host == "soundcloud.com" or host.endswith(".soundcloud.com")
     tiktok_cookiefile = None
     tiktok_info = None
     youtube_info = None
@@ -623,6 +625,8 @@ def extract_media(source_url):
                 print(f"Falha na análise do Vimeo: {type(error).__name__}: {error}")
             elif is_dailymotion:
                 print(f"Falha na análise do Dailymotion: {type(error).__name__}: {error}")
+            elif is_soundcloud:
+                print(f"Falha na análise do SoundCloud: {type(error).__name__}: {error}")
             media = None
 
     # Fallback para publicação de foto única, quando o Instagram não retorna
@@ -856,6 +860,72 @@ def normalize_dailymotion_media(info, host):
         "http_headers": headers,
     }
 
+
+
+def normalize_soundcloud_media(info, host):
+    """Normaliza uma faixa pública do SoundCloud como áudio baixável.
+
+    Priorizamos MP3 progressivo por HTTP porque é o formato mais compatível
+    com navegadores e celulares e evita depender de uma playlist HLS apenas
+    para tocar a prévia ou iniciar o download.
+    """
+    if not info:
+        return None
+
+    entries = info.get("entries") if isinstance(info, dict) and info.get("entries") else [info]
+    entry = next((item for item in entries if isinstance(item, dict)), None)
+    if not entry:
+        return None
+
+    formats = [fmt for fmt in (entry.get("formats") or []) if isinstance(fmt, dict) and fmt.get("url")]
+
+    def score(fmt):
+        ext = str(fmt.get("ext") or "").lower()
+        protocol = str(fmt.get("protocol") or "").lower()
+        format_id = str(fmt.get("format_id") or "").lower()
+        vcodec = str(fmt.get("vcodec") or "none").lower()
+        acodec = str(fmt.get("acodec") or "none").lower()
+        audio_only = vcodec == "none" and acodec != "none"
+        if not audio_only:
+            return (-1, 0)
+        if ext == "mp3" and (protocol in ("http", "https") or format_id.startswith("http_mp3")):
+            base = 4
+        elif ext == "mp3":
+            base = 3
+        elif ext in ("m4a", "aac"):
+            base = 2
+        else:
+            base = 1
+        bitrate = fmt.get("abr") or fmt.get("tbr") or 0
+        return (base, float(bitrate or 0))
+
+    candidates = [fmt for fmt in formats if score(fmt)[0] >= 0]
+    selected = max(candidates, key=score) if candidates else None
+
+    media_url = selected.get("url") if selected else entry.get("url")
+    if not media_url:
+        return None
+
+    extension = str((selected or entry).get("ext") or "mp3").lower()
+    if extension not in ("mp3", "m4a", "aac", "ogg", "opus", "wav"):
+        extension = "mp3"
+
+    track_title = str(entry.get("track") or entry.get("title") or info.get("title") or "Áudio do SoundCloud").strip()
+    artist = str(entry.get("uploader") or entry.get("artist") or entry.get("creator") or "").strip()
+    display_title = f"{artist} - {track_title}" if artist and artist.lower() not in track_title.lower() else track_title
+    headers = (selected or {}).get("http_headers") or entry.get("http_headers") or info.get("http_headers") or {}
+
+    return {
+        "status": "ready",
+        "source": "soundcloud",
+        "type": "audio",
+        "url": media_url,
+        "title": display_title,
+        "thumbnail": entry.get("thumbnail") or info.get("thumbnail"),
+        "filename": f"{safe_filename(display_title)}.{extension}",
+        "media_count": 1,
+        "http_headers": headers,
+    }
 
 def select_instagram_video_format(entry):
     """Retorna a melhor URL de vídeo quando o Instagram só expõe a capa no nível principal."""
@@ -2450,6 +2520,15 @@ def normalize_carousel_media(info, host, sanitized_info=None):
 
     if host == "dailymotion.com" or host.endswith(".dailymotion.com") or host == "dai.ly":
         item = normalize_dailymotion_media(info, host)
+        if not item:
+            return None
+        primary = dict(item)
+        primary["items"] = [item]
+        primary["media_count"] = 1
+        return primary
+
+    if host == "soundcloud.com" or host.endswith(".soundcloud.com"):
+        item = normalize_soundcloud_media(info, host)
         if not item:
             return None
         primary = dict(item)
