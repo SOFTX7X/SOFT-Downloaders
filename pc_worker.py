@@ -2119,63 +2119,85 @@ def _threads_make_item(media, post_code, index, title):
     return None
 
 
-def extract_threads_public_media(source_url):
-    """Extrai foto, vídeo ou carrossel de uma publicação pública do Threads.
-
-    O HTML comum do Threads pode cair na tela de login, mas a versão servida
-    para crawlers de link-preview contém os dados estruturados da publicação.
-    Para links /share/, o og:url revela o shortcode canônico do post.
-    """
+def _threads_canonical_value(page):
+    """Encontra uma URL canônica útil, inclusive em páginas /share/."""
     from html import unescape as html_unescape
 
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-    }
-    request = Request(source_url, headers=headers)
-    with urlopen(request, timeout=25) as response:
-        page = response.read().decode('utf-8', 'ignore')
+    value = _threads_meta_value(page, 'og:url')
+    if value and 'threads.' in value:
+        return value
 
-    canonical = _threads_meta_value(page, 'og:url') or source_url
-    target_code = _threads_post_code(canonical) or _threads_post_code(source_url)
+    patterns = (
+        r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\']([^"\']+)["\']',
+        r'<link[^>]+href=["\']([^"\']+)["\'][^>]+rel=["\']canonical["\']',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, page, re.IGNORECASE)
+        if match:
+            value = html_unescape(match.group(1)).strip()
+            if 'threads.' in value:
+                return value
+    return None
 
-    posts = []
-    for block in re.findall(r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>', page, re.IGNORECASE | re.DOTALL):
-        payload = None
-        for candidate in (block.strip(), html_unescape(block.strip())):
-            if not candidate:
-                continue
-            try:
-                payload = json.loads(candidate)
-                break
-            except Exception:
-                continue
-        if payload is not None:
-            _threads_collect_posts(payload, posts)
 
-    if target_code:
-        post = next((item for item in posts if str(item.get('code') or '') == target_code), None)
-        if post is None:
-            return None
-    else:
-        # Sem um shortcode confiável, só aceitamos quando existe exatamente um
-        # post com mídia na página. Isso evita baixar recomendação/reply errado.
-        unique = {str(item.get('code') or ''): item for item in posts if item.get('code')}
-        if len(unique) != 1:
-            return None
-        post = next(iter(unique.values()))
-        target_code = str(post.get('code') or 'post')
+def _threads_asset_key(url):
+    if not isinstance(url, str) or not url:
+        return ''
+    try:
+        return Path(urlparse(url).path).name.lower()
+    except Exception:
+        return ''
 
+
+def _threads_post_thumbnail_keys(post):
+    keys = set()
+    if not isinstance(post, dict):
+        return keys
+    nodes = post.get('carousel_media') if isinstance(post.get('carousel_media'), list) else [post]
+    for node in nodes:
+        key = _threads_asset_key(_threads_image_candidate(node))
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _threads_raw_mp4_urls(page):
+    """Extrai MP4s que o Threads deixou escapados dentro do HTML/JSON."""
+    from html import unescape as html_unescape
+
+    normalized = html_unescape(page)
+    for _ in range(4):
+        previous = normalized
+        normalized = re.sub(r'\\+/', '/', normalized)
+        normalized = re.sub(r'\\+u0026', '&', normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r'\\+u003d', '=', normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r'\\+u003f', '?', normalized, flags=re.IGNORECASE)
+        normalized = normalized.replace('\\"', '"')
+        if normalized == previous:
+            break
+
+    urls = []
+    seen = set()
+    for match in re.finditer(r'https://[^\s"\'<>]+?\.mp4(?:\?[^\s"\'<>]*)?', normalized, re.IGNORECASE):
+        url = match.group(0).rstrip('\\,]}')
+        if url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
+
+
+def _threads_build_result(post, target_code, page):
     caption = ''
-    caption_node = post.get('caption')
+    caption_node = post.get('caption') if isinstance(post, dict) else None
     if isinstance(caption_node, dict):
         caption = str(caption_node.get('text') or '').strip()
-    user = post.get('user') if isinstance(post.get('user'), dict) else {}
+    user = post.get('user') if isinstance(post, dict) and isinstance(post.get('user'), dict) else {}
     username = str(user.get('username') or '').strip()
+    meta_title = _threads_meta_value(page, 'og:title', 'twitter:title') or ''
     title = (caption.splitlines()[0][:90] if caption else '') or (
-        f'Publicação de @{username}' if username else 'Mídia do Threads'
-    )
+        meta_title[:90] if meta_title and 'threads' not in meta_title.lower() else ''
+    ) or (f'Publicação de @{username}' if username else 'Mídia do Threads')
 
     media_nodes = post.get('carousel_media') if isinstance(post.get('carousel_media'), list) else None
     if not media_nodes:
@@ -2186,7 +2208,6 @@ def extract_threads_public_media(source_url):
         item = _threads_make_item(media_node, target_code, index, title)
         if item:
             items.append(item)
-
     if not items:
         return None
 
@@ -2194,6 +2215,131 @@ def extract_threads_public_media(source_url):
     primary['items'] = items
     primary['media_count'] = len(items)
     return primary
+
+
+def extract_threads_public_media(source_url):
+    """Extrai foto, vídeo ou carrossel de uma publicação pública do Threads.
+
+    Alguns links /share/ não expõem o shortcode canônico de forma consistente.
+    A rotina tenta a estrutura normal, associa o post pela capa e, por último,
+    aceita um MP4 bruto apenas quando há uma única URL de vídeo na página.
+    """
+    from html import unescape as html_unescape
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    }
+
+    def fetch(url):
+        request = Request(url, headers=headers)
+        with urlopen(request, timeout=25) as response:
+            return response.read().decode('utf-8', 'ignore'), response.geturl()
+
+    page, final_url = fetch(source_url)
+    pages = [(page, final_url or source_url)]
+
+    canonical = _threads_canonical_value(page)
+    if canonical and canonical.rstrip('/') != source_url.rstrip('/'):
+        try:
+            canonical_page, canonical_final = fetch(canonical)
+            pages.insert(0, (canonical_page, canonical_final or canonical))
+        except Exception:
+            pass
+
+    source_parts = [part for part in urlparse(source_url).path.split('/') if part]
+    share_code = source_parts[-1] if source_parts else 'share'
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', share_code or ''):
+        share_code = 'share'
+
+    for current_page, current_url in pages:
+        current_canonical = _threads_canonical_value(current_page) or canonical or current_url
+        target_code = (
+            _threads_post_code(current_canonical)
+            or _threads_post_code(current_url)
+            or _threads_post_code(source_url)
+        )
+
+        posts = []
+        for block in re.findall(r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>', current_page, re.IGNORECASE | re.DOTALL):
+            payload = None
+            for candidate in (block.strip(), html_unescape(block.strip())):
+                if not candidate:
+                    continue
+                try:
+                    payload = json.loads(candidate)
+                    break
+                except Exception:
+                    continue
+            if payload is not None:
+                _threads_collect_posts(payload, posts)
+
+        unique = {}
+        ordered_posts = []
+        for item in posts:
+            code = str(item.get('code') or '')
+            if code and code not in unique:
+                unique[code] = item
+                ordered_posts.append(item)
+
+        post = unique.get(target_code) if target_code else None
+
+        # Quando /share/ não entrega um shortcode aproveitável, a capa do post
+        # costuma continuar igual à og:image. Isso identifica o item correto.
+        og_image = _threads_meta_value(current_page, 'og:image', 'twitter:image')
+        og_key = _threads_asset_key(og_image)
+        if post is None and og_key:
+            matches = [item for item in ordered_posts if og_key in _threads_post_thumbnail_keys(item)]
+            if len(matches) == 1:
+                post = matches[0]
+                target_code = str(post.get('code') or target_code or share_code)
+
+        if post is None and len(ordered_posts) == 1:
+            post = ordered_posts[0]
+            target_code = str(post.get('code') or target_code or share_code)
+
+        if post is None and ordered_posts:
+            video_posts = []
+            for item in ordered_posts:
+                nodes = item.get('carousel_media') if isinstance(item.get('carousel_media'), list) else [item]
+                if any(_threads_video_candidate(node) for node in nodes if isinstance(node, dict)):
+                    video_posts.append(item)
+            if len(video_posts) == 1:
+                post = video_posts[0]
+                target_code = str(post.get('code') or target_code or share_code)
+
+        if post is not None:
+            result = _threads_build_result(post, target_code or share_code, current_page)
+            if result:
+                return result
+
+        # Caso observado em alguns /share/: video_versions existe, mas o objeto
+        # principal não fecha como JSON. Só usamos o fallback quando existe um
+        # único MP4, para não confundir o post com recomendações/replies.
+        raw_mp4 = _threads_raw_mp4_urls(current_page)
+        if 'video_versions' in current_page and len(raw_mp4) == 1:
+            title = _threads_meta_value(current_page, 'og:title', 'twitter:title') or 'Vídeo do Threads'
+            item = {
+                'status': 'ready',
+                'source': 'threads',
+                'type': 'video',
+                'url': raw_mp4[0],
+                'title': title[:90],
+                'thumbnail': og_image,
+                'filename': f'threads-{target_code or share_code}-1.mp4',
+                'media_count': 1,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0',
+                    'Referer': 'https://www.threads.com/',
+                },
+            }
+            primary = dict(item)
+            primary['items'] = [item]
+            primary['media_count'] = 1
+            return primary
+
+    return None
 
 
 def _pinterest_pin_id(source_url):
