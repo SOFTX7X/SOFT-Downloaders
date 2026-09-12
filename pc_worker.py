@@ -2012,16 +2012,80 @@ def _threads_post_code(source_url):
     return None
 
 
-def _threads_collect_posts(node, out):
-    media_keys = {'video_versions', 'video_dash_manifest', 'image_versions2', 'carousel_media'}
+def _threads_contains_media(node, root_code=None):
+    """Retorna True quando o post contém mídia, inclusive em um filho.
+
+    A busca não atravessa outro objeto com shortcode diferente, para não
+    confundir a publicação principal com reply/recomendação embutida.
+    """
     if isinstance(node, dict):
-        if node.get('code') and media_keys.intersection(node.keys()):
+        node_code = str(node.get('code') or '')
+        if root_code and node_code and node_code != root_code:
+            return False
+        if root_code is None and node_code:
+            root_code = node_code
+        if any(key in node for key in ('video_versions', 'video_dash_manifest', 'image_versions2', 'carousel_media')):
+            return True
+        return any(_threads_contains_media(value, root_code) for value in node.values())
+    if isinstance(node, list):
+        return any(_threads_contains_media(value, root_code) for value in node)
+    return False
+
+
+def _threads_collect_posts(node, out):
+    if isinstance(node, dict):
+        # Não exige mais que code e video_versions/image_versions2 estejam no
+        # mesmo nível. Alguns links /share/ usam um objeto-pai com o shortcode
+        # e deixam a mídia em um filho.
+        if node.get('code') and _threads_contains_media(node, str(node.get('code'))):
             out.append(node)
         for value in node.values():
             _threads_collect_posts(value, out)
     elif isinstance(node, list):
         for value in node:
             _threads_collect_posts(value, out)
+
+
+def _threads_collect_media_nodes(node, out, root_code=None):
+    """Coleta nós baixáveis do post sem atravessar replies/recomendações."""
+    if isinstance(node, dict):
+        node_code = str(node.get('code') or '')
+        if root_code and node_code and node_code != root_code:
+            return
+        if root_code is None and node_code:
+            root_code = node_code
+
+        has_direct_media = isinstance(node.get('video_versions'), list) or isinstance(node.get('image_versions2'), dict)
+        if has_direct_media:
+            out.append(node)
+            return
+
+        carousel = node.get('carousel_media')
+        if isinstance(carousel, list):
+            before = len(out)
+            for child in carousel:
+                _threads_collect_media_nodes(child, out, root_code)
+            if len(out) > before:
+                return
+
+        for value in node.values():
+            _threads_collect_media_nodes(value, out, root_code)
+    elif isinstance(node, list):
+        for value in node:
+            _threads_collect_media_nodes(value, out, root_code)
+
+
+def _threads_is_placeholder_url(value):
+    if not isinstance(value, str) or not value.startswith('https://'):
+        return True
+    try:
+        parsed = urlparse(value)
+        path = (parsed.path or '').lower()
+        # O Threads pode expor rsrc.php como preview de vídeo. É um clipe preto
+        # de interface, não a mídia real da publicação.
+        return path.endswith('/rsrc.php') or path == '/rsrc.php'
+    except Exception:
+        return True
 
 
 def _threads_image_candidate(media):
@@ -2033,7 +2097,7 @@ def _threads_image_candidate(media):
         if not isinstance(candidate, dict):
             continue
         url = candidate.get('url')
-        if not isinstance(url, str) or not url.startswith('https://'):
+        if _threads_is_placeholder_url(url):
             continue
         width = int(candidate.get('width') or 0)
         height = int(candidate.get('height') or 0)
@@ -2076,7 +2140,7 @@ def _threads_video_candidate(media):
         if not isinstance(version, dict):
             continue
         url = version.get('url')
-        if not isinstance(url, str) or not url.startswith('https://'):
+        if _threads_is_placeholder_url(url):
             continue
         path = url.split('?', 1)[0]
         if path in seen:
@@ -2135,10 +2199,15 @@ def extract_threads_public_media(source_url):
     }
     request = Request(source_url, headers=headers)
     with urlopen(request, timeout=25) as response:
+        resolved_url = response.geturl()
         page = response.read().decode('utf-8', 'ignore')
 
-    canonical = _threads_meta_value(page, 'og:url') or source_url
-    target_code = _threads_post_code(canonical) or _threads_post_code(source_url)
+    canonical = _threads_meta_value(page, 'og:url') or resolved_url or source_url
+    target_code = (
+        _threads_post_code(canonical)
+        or _threads_post_code(resolved_url)
+        or _threads_post_code(source_url)
+    )
 
     posts = []
     for block in re.findall(r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>', page, re.IGNORECASE | re.DOTALL):
@@ -2177,9 +2246,22 @@ def extract_threads_public_media(source_url):
         f'Publicação de @{username}' if username else 'Mídia do Threads'
     )
 
-    media_nodes = post.get('carousel_media') if isinstance(post.get('carousel_media'), list) else None
-    if not media_nodes:
-        media_nodes = [post]
+    media_nodes = []
+    _threads_collect_media_nodes(post, media_nodes, str(post.get('code') or target_code or ''))
+
+    # Deduplica o mesmo nó quando o JSON do Threads referencia a mídia em mais
+    # de um caminho dentro do post. Mantém a ordem original do carrossel.
+    unique_media_nodes = []
+    seen_media = set()
+    for media_node in media_nodes:
+        marker = str(media_node.get('pk') or media_node.get('id') or '')
+        if not marker:
+            marker = _threads_video_candidate(media_node) or _threads_image_candidate(media_node) or str(id(media_node))
+        if marker in seen_media:
+            continue
+        seen_media.add(marker)
+        unique_media_nodes.append(media_node)
+    media_nodes = unique_media_nodes
 
     items = []
     for index, media_node in enumerate(media_nodes, start=1):
