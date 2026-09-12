@@ -3221,7 +3221,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
         if mp3_requested:
             if not cached:
                 return self.respond(400, {"error": "Analise o vídeo novamente antes de gerar o MP3."})
-            return self.proxy_media_as_mp3(cached)
+            return self.proxy_media_as_mp3(cached, download_requested)
 
         # No TikTok, reutilizamos o info-json e os cookies gerados na própria
         # análise. Assim o download NÃO abre a página do TikTok uma segunda vez,
@@ -3554,7 +3554,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
             self.send_local_download(media_file, filename, "audio/mpeg")
             return True
 
-    def proxy_media_as_mp3(self, cached):
+    def proxy_media_as_mp3(self, cached, download_requested=False):
         if cached.get("media_type") != "video":
             return self.respond(415, {
                 "error": "Esta mídia não é um vídeo disponível para conversão em MP3."
@@ -3603,7 +3603,10 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 if origin in ALLOWED_ORIGINS:
                     self.send_header("Access-Control-Allow-Origin", origin)
                 self.send_header("Content-Type", "audio/mpeg")
-                self.send_header("Content-Disposition", content_disposition(filename))
+                if download_requested:
+                    self.send_header("Content-Disposition", content_disposition(filename))
+                else:
+                    self.send_header("Content-Disposition", f'inline; filename="{filename}"')
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()

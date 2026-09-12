@@ -512,31 +512,114 @@ function renderMp3Result(data) {
   carouselItems.replaceChildren();
 
   const card = document.createElement('article');
-  card.className = 'mp3-result-card';
-
-  const cover = document.createElement('div');
-  cover.className = 'mp3-cover';
-  if (data.thumbnail) {
-    const image = document.createElement('img');
-    image.src = data.thumbnail;
-    image.alt = '';
-    image.addEventListener('error', () => {
-      image.remove();
-      cover.classList.add('is-fallback');
-    });
-    cover.append(image);
-  } else {
-    cover.classList.add('is-fallback');
-  }
+  card.className = 'mp3-audio-card';
 
   const details = document.createElement('div');
-  details.className = 'mp3-details';
+  details.className = 'audio-details mp3-audio-details';
+
   const title = document.createElement('strong');
-  title.textContent = data.title || 'Vídeo pronto para converter';
+  title.className = 'audio-title';
+  title.textContent = data.title || 'Áudio do vídeo';
+
   const format = document.createElement('span');
+  format.className = 'audio-artist';
   format.textContent = 'MP3 • 192 kbps';
-  details.append(title, format);
-  card.append(cover, details);
+
+  const player = document.createElement('div');
+  player.className = 'audio-player';
+
+  const playButton = document.createElement('button');
+  playButton.type = 'button';
+  playButton.className = 'audio-play';
+  playButton.setAttribute('aria-label', 'Reproduzir áudio');
+  playButton.textContent = '▶';
+
+  const timeline = document.createElement('div');
+  timeline.className = 'audio-timeline';
+
+  const progress = document.createElement('input');
+  progress.className = 'audio-progress';
+  progress.type = 'range';
+  progress.min = '0';
+  progress.max = '1000';
+  progress.value = '0';
+  progress.step = '1';
+  progress.setAttribute('aria-label', 'Progresso do áudio');
+
+  const timeRow = document.createElement('div');
+  timeRow.className = 'audio-time-row';
+  const currentTime = document.createElement('span');
+  currentTime.textContent = '0:00';
+  const durationTime = document.createElement('span');
+  durationTime.textContent = data.duration ? formatAudioTime(data.duration) : '--:--';
+  timeRow.append(currentTime, durationTime);
+  timeline.append(progress, timeRow);
+  player.append(playButton, timeline);
+  details.append(title, format, player);
+
+  const audio = document.createElement('audio');
+  audio.src = proxyMp3PreviewUrl(data.proxy_id);
+  audio.preload = 'metadata';
+  audio.className = 'audio-engine';
+  audio.setAttribute('aria-hidden', 'true');
+
+  const syncPlayer = () => {
+    const duration = Number.isFinite(audio.duration) && audio.duration > 0
+      ? audio.duration
+      : Number(data.duration || 0);
+    if (duration > 0) {
+      const ratio = Math.min(1, Math.max(0, audio.currentTime / duration));
+      progress.value = String(Math.round(ratio * 1000));
+      durationTime.textContent = formatAudioTime(duration);
+    }
+    currentTime.textContent = formatAudioTime(audio.currentTime);
+  };
+
+  playButton.addEventListener('click', async () => {
+    if (audio.paused) {
+      try {
+        await audio.play();
+      } catch (_) {
+        return;
+      }
+    } else {
+      audio.pause();
+    }
+  });
+
+  progress.addEventListener('input', () => {
+    const duration = Number.isFinite(audio.duration) && audio.duration > 0
+      ? audio.duration
+      : Number(data.duration || 0);
+    if (duration > 0 && Number.isFinite(audio.duration)) {
+      audio.currentTime = (Number(progress.value) / 1000) * duration;
+      syncPlayer();
+    }
+  });
+
+  audio.addEventListener('play', () => {
+    playButton.textContent = '❚❚';
+    playButton.setAttribute('aria-label', 'Pausar áudio');
+  });
+  audio.addEventListener('pause', () => {
+    playButton.textContent = '▶';
+    playButton.setAttribute('aria-label', 'Reproduzir áudio');
+  });
+  audio.addEventListener('ended', () => {
+    playButton.textContent = '▶';
+    progress.value = '0';
+    currentTime.textContent = '0:00';
+  });
+  audio.addEventListener('loadedmetadata', syncPlayer);
+  audio.addEventListener('durationchange', syncPlayer);
+  audio.addEventListener('timeupdate', syncPlayer);
+  audio.addEventListener('error', () => {
+    playButton.disabled = true;
+    playButton.textContent = '▶';
+    format.textContent = 'Prévia de áudio indisponível';
+  });
+
+  card.append(details, audio);
   preview.replaceChildren(card);
 
   const mp3Filename = String(data.filename || 'soft-download.mp4').replace(/\.[^.]+$/, '') + '.mp3';
@@ -749,6 +832,11 @@ function showMp3FormError(message) {
 function proxyMp3Url(proxyId) {
   if (!proxyId) return '';
   return `https://${WORKER_MEDIA_HOST}/media?id=${encodeURIComponent(proxyId)}&mp3=1&dl=1`;
+}
+
+function proxyMp3PreviewUrl(proxyId) {
+  if (!proxyId) return '';
+  return `https://${WORKER_MEDIA_HOST}/media?id=${encodeURIComponent(proxyId)}&mp3=1`;
 }
 
 function proxyMediaUrl(url, source, proxyId, download = false) {

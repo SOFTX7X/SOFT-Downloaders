@@ -123,3 +123,12 @@ body.result-screen-open{overflow:hidden}
   .audio-preview-card{width:min(340px,100%)}
   .audio-cover{width:240px;height:240px}
 }
+
+/* MP3: resultado sem capa, usando o mesmo player visual das músicas. */
+.result-preview[data-type="mp3"]{width:min(420px,100%);height:auto;background:transparent;overflow:visible}
+.mp3-audio-card{width:min(420px,100%);display:grid;margin:auto;text-align:left}
+.mp3-audio-details{gap:5px;width:100%;padding:0}
+.mp3-audio-details .audio-player{margin-top:12px}
+@media (max-width:640px){
+  .result-preview[data-type="mp3"],.mp3-audio-card{width:min(340px,100%)}
+}
