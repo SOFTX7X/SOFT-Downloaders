@@ -30,8 +30,10 @@ sys.path.insert(0, str(ROOT / "api"))
 
 from extract import (  # noqa: E402
     ALLOWED_HOSTS,
+    DIRECT_VIDEO_EXTENSIONS,
     extract_instagram_embed,
     extract_instagram_post_image,
+    is_public_hostname,
     normalize_media,
     safe_filename,
 )
@@ -118,10 +120,11 @@ def default_proxy_headers(source):
         "twitch": "https://www.twitch.tv/",
         "kick": "https://kick.com/",
     }
-    return {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": referers.get(source, "https://www.instagram.com/"),
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
+    referer = referers.get(source)
+    if referer:
+        headers["Referer"] = referer
+    return headers
 
 
 def cleanup_cache_entry(entry):
@@ -524,10 +527,39 @@ def resolve_dailymotion_stream_cli(source_url, selector="best[height<=720]/best"
 def extract_media(source_url):
     parsed = urlparse(source_url)
     host = parsed.hostname.lower().removeprefix("www.") if parsed.hostname else ""
-    if parsed.scheme not in ("http", "https") or not any(
-        host == item or host.endswith("." + item) for item in ALLOWED_HOSTS
-    ):
-        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai, Dailymotion, SoundCloud, LinkedIn, Twitch ou Kick."
+    direct_extension = parsed.path.rsplit(".", 1)[-1].lower() if "." in parsed.path else ""
+    supported_host = any(host == item or host.endswith("." + item) for item in ALLOWED_HOSTS)
+    direct_video = direct_extension in DIRECT_VIDEO_EXTENSIONS
+
+    if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
+        return None, "Use um link público http ou https."
+
+    if not supported_host:
+        if not direct_video or not is_public_hostname(host):
+            return None, "Use um link público de uma plataforma compatível ou um arquivo direto de vídeo."
+        raw_name = Path(parsed.path).name or "video.mp4"
+        title = safe_filename(Path(raw_name).stem) or "video"
+        media = {
+            "status": "ready",
+            "source": "direct",
+            "type": "video",
+            "url": source_url,
+            "title": title,
+            "thumbnail": None,
+            "filename": f"{title}.{direct_extension}",
+            "media_count": 1,
+            "items": [{
+                "status": "ready",
+                "source": "direct",
+                "type": "video",
+                "url": source_url,
+                "title": title,
+                "thumbnail": None,
+                "filename": f"{title}.{direct_extension}",
+                "media_count": 1,
+            }],
+        }
+        return media, None
 
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
@@ -3151,6 +3183,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
         query = parse_qs(urlparse(self.path).query)
         proxy_id = query.get("id", [""])[0]
         download_requested = query.get("dl", [""])[0] == "1"
+        mp3_requested = query.get("mp3", [""])[0] == "1"
         cached = get_cached_media(proxy_id) if proxy_id else None
 
         if proxy_id:
@@ -3181,8 +3214,14 @@ class WorkerHandler(BaseHTTPRequestHandler):
             headers = default_proxy_headers(source)
 
         parsed = urlparse(source_url)
-        if parsed.scheme != "https" or not parsed.hostname:
+        allowed_scheme = parsed.scheme == "https" or (source == "direct" and parsed.scheme == "http")
+        if not allowed_scheme or not parsed.hostname:
             return self.respond(400, {"error": "Arquivo de mídia não permitido."})
+
+        if mp3_requested:
+            if not cached:
+                return self.respond(400, {"error": "Analise o vídeo novamente antes de gerar o MP3."})
+            return self.proxy_media_as_mp3(cached)
 
         # No TikTok, reutilizamos o info-json e os cookies gerados na própria
         # análise. Assim o download NÃO abre a página do TikTok uma segunda vez,
@@ -3321,6 +3360,282 @@ class WorkerHandler(BaseHTTPRequestHandler):
         except Exception as error:
             print(f"Falha no proxy {source or 'desconhecido'} via urllib: {type(error).__name__}: {error}")
             self.respond(502, {"error": "Não foi possível preparar este arquivo."})
+
+    def resolve_mp3_stream(self, cached):
+        """Resolve uma única faixa reproduzível para conversão em MP3.
+
+        Preferimos o info-json salvo durante a análise porque ele evita uma
+        segunda abertura da publicação em plataformas sensíveis. Se esse token
+        estiver expirado, fazemos uma única tentativa pela página original e,
+        por fim, usamos a URL de mídia já validada na análise.
+        """
+        source = cached.get("source") or ""
+        info_path = cached.get("info_path")
+        cookiefile = cached.get("cookiefile")
+        page_url = cached.get("page_url") or cached.get("url")
+        selector = "bestaudio/best[height<=480]/worst"
+
+        def run(use_info_json):
+            command = [
+                sys.executable, "-m", "yt_dlp",
+                "--dump-single-json", "--skip-download",
+                "--no-warnings", "--no-playlist",
+                "--socket-timeout", "20", "--retries", "0",
+                "-f", selector,
+            ]
+            if source == "tiktok":
+                command.extend(["--impersonate", "chrome"])
+            if cookiefile and Path(cookiefile).is_file():
+                command.extend(["--cookies", cookiefile])
+            if use_info_json and info_path and Path(info_path).is_file():
+                command.extend(["--load-info-json", info_path])
+            elif page_url:
+                command.append(page_url)
+            else:
+                return None
+            try:
+                return subprocess.run(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=50,
+                )
+            except subprocess.TimeoutExpired:
+                return None
+
+        def parse_result(result):
+            if result is None or result.returncode != 0:
+                return None
+            try:
+                info = json.loads(result.stdout)
+                if isinstance(info, dict) and isinstance(info.get("entries"), list):
+                    info = next((entry for entry in info["entries"] if isinstance(entry, dict)), info)
+
+                selected = info if isinstance(info, dict) else {}
+                requested = selected.get("requested_downloads") if isinstance(selected, dict) else None
+                if isinstance(requested, list) and requested:
+                    selected = next((item for item in requested if isinstance(item, dict)), selected)
+
+                media_url = selected.get("url") if isinstance(selected, dict) else None
+                if not media_url and isinstance(info, dict):
+                    media_url = info.get("url")
+                if not media_url:
+                    return None
+
+                headers = default_proxy_headers(source)
+                if isinstance(info, dict):
+                    headers.update(clean_proxy_headers(info.get("http_headers") or {}))
+                if isinstance(selected, dict):
+                    headers.update(clean_proxy_headers(selected.get("http_headers") or {}))
+                headers.update(clean_proxy_headers(cached.get("headers") or {}))
+                return media_url, headers
+            except Exception as error:
+                print(f"Falha ao interpretar stream MP3 de {source}: {type(error).__name__}: {error}")
+                return None
+
+        first = run(True)
+        parsed = parse_result(first)
+        if parsed:
+            return parsed
+        if first is not None and first.returncode != 0:
+            detail = (first.stderr or "").strip()
+            if detail:
+                print(f"Falha ao resolver MP3 via info-json ({source}): {detail[-1600:]}")
+
+        # Só vale uma segunda extração quando realmente existia um info-json.
+        if info_path and Path(info_path).is_file() and page_url:
+            second = run(False)
+            parsed = parse_result(second)
+            if parsed:
+                return parsed
+            if second is not None and second.returncode != 0:
+                detail = (second.stderr or "").strip()
+                if detail:
+                    print(f"Falha ao resolver MP3 pela página ({source}): {detail[-1600:]}")
+
+        fallback_url = cached.get("url")
+        if fallback_url:
+            headers = default_proxy_headers(source)
+            headers.update(clean_proxy_headers(cached.get("headers") or {}))
+            return fallback_url, headers
+        return None, {}
+
+    def run_mp3_ffmpeg(self, media_url, headers):
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            return None
+
+        command = [
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+        ]
+        user_agent = headers.get("User-Agent") or headers.get("user-agent")
+        referer = headers.get("Referer") or headers.get("referer")
+        if user_agent:
+            command.extend(["-user_agent", user_agent])
+        if referer:
+            command.extend(["-referer", referer])
+
+        extra_headers = []
+        for name, value in headers.items():
+            if name.lower() in ("user-agent", "referer"):
+                continue
+            extra_headers.append(f"{name}: {value}\r\n")
+        if extra_headers:
+            command.extend(["-headers", "".join(extra_headers)])
+
+        command.extend([
+            "-i", media_url,
+            "-map", "0:a:0",
+            "-vn", "-map_metadata", "-1",
+            "-c:a", "libmp3lame", "-b:a", "192k",
+            "-write_xing", "0",
+            "-f", "mp3", "pipe:1",
+        ])
+        return command
+
+    def prepare_mp3_file_with_ytdlp(self, cached, filename):
+        """Fallback completo quando o FFmpeg não consegue abrir a URL resolvida."""
+        source = cached.get("source") or ""
+        info_path = cached.get("info_path")
+        cookiefile = cached.get("cookiefile")
+        page_url = cached.get("page_url") or cached.get("url")
+        selector = "bestaudio/best[height<=480]/worst"
+
+        with tempfile.TemporaryDirectory(prefix="soft-mp3-") as temp_dir:
+            output_template = str(Path(temp_dir) / "audio.%(ext)s")
+
+            def run(use_info_json):
+                command = [
+                    sys.executable, "-m", "yt_dlp",
+                    "--quiet", "--no-warnings", "--no-progress", "--no-playlist",
+                    "-f", selector,
+                    "--extract-audio", "--audio-format", "mp3", "--audio-quality", "192K",
+                    "-o", output_template,
+                ]
+                if source == "tiktok":
+                    command.extend(["--impersonate", "chrome"])
+                if cookiefile and Path(cookiefile).is_file():
+                    command.extend(["--cookies", cookiefile])
+                if use_info_json and info_path and Path(info_path).is_file():
+                    command.extend(["--load-info-json", info_path])
+                elif page_url:
+                    command.append(page_url)
+                else:
+                    return None
+                return subprocess.run(
+                    command,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+
+            result = run(True)
+            if result is None or result.returncode != 0:
+                detail = (result.stderr if result else "").strip()
+                if detail:
+                    print(f"Falha no MP3 via info-json ({source}): {detail[-1600:]}")
+                result = run(False)
+
+            if result is None or result.returncode != 0:
+                detail = (result.stderr if result else "").strip()
+                if detail:
+                    print(f"Falha no MP3 via yt-dlp ({source}): {detail[-1600:]}")
+                return False
+
+            files = [
+                path for path in Path(temp_dir).iterdir()
+                if path.is_file() and path.suffix.lower() == ".mp3"
+            ]
+            if not files:
+                return False
+            media_file = max(files, key=lambda path: path.stat().st_size)
+            self.send_local_download(media_file, filename, "audio/mpeg")
+            return True
+
+    def proxy_media_as_mp3(self, cached):
+        if cached.get("media_type") != "video":
+            return self.respond(415, {
+                "error": "Esta mídia não é um vídeo disponível para conversão em MP3."
+            })
+
+        original_name = Path(cached.get("filename") or "soft-download.mp4").name
+        stem = safe_filename(Path(original_name).stem) or "soft-download"
+        filename = f"{stem}.mp3"
+
+        media_url, headers = self.resolve_mp3_stream(cached)
+        if not media_url:
+            return self.respond(502, {"error": "Não foi possível localizar o áudio deste vídeo."})
+
+        command = self.run_mp3_ffmpeg(media_url, headers)
+        if command is None:
+            return self.respond(503, {"error": "Conversão para MP3 indisponível neste momento."})
+
+        process = None
+        with tempfile.TemporaryFile(mode="w+b") as error_log:
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=error_log,
+                    bufsize=0,
+                )
+                first_chunk = process.stdout.read(32 * 1024) if process.stdout else b""
+                if not first_chunk:
+                    try:
+                        process.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        process.terminate()
+                    error_log.seek(0)
+                    detail = error_log.read().decode("utf-8", "ignore").strip()
+                    if detail:
+                        print(f"Falha no streaming MP3: {detail[-1600:]}")
+                    if self.prepare_mp3_file_with_ytdlp(cached, filename):
+                        return
+                    return self.respond(502, {
+                        "error": "Não foi possível gerar o MP3 deste vídeo. Confirme se ele possui áudio."
+                    })
+
+                self.send_response(200)
+                origin = self.headers.get("Origin")
+                if origin in ALLOWED_ORIGINS:
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Content-Disposition", content_disposition(filename))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(first_chunk)
+
+                while process.stdout:
+                    chunk = process.stdout.read(64 * 1024)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+
+                return_code = process.wait()
+                if return_code != 0:
+                    error_log.seek(0)
+                    detail = error_log.read().decode("utf-8", "ignore").strip()
+                    if detail:
+                        print(f"Conversão MP3 interrompida ({return_code}): {detail[-1600:]}")
+            except (BrokenPipeError, ConnectionResetError):
+                if process and process.poll() is None:
+                    process.terminate()
+            except Exception as error:
+                if process and process.poll() is None:
+                    process.terminate()
+                print(f"Falha na conversão MP3: {type(error).__name__}: {error}")
+                if not self.wfile.closed:
+                    try:
+                        self.respond(502, {"error": "Não foi possível gerar o MP3 deste vídeo."})
+                    except Exception:
+                        pass
+            finally:
+                if process and process.poll() is None:
+                    process.kill()
 
     def proxy_instagram_with_ytdlp(self, cached):
         page_url = cached.get("page_url")

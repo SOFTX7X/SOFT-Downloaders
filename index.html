@@ -23,23 +23,48 @@
 
     <main id="inicio">
       <section class="hero" aria-labelledby="page-title">
-        <p class="eyebrow">MÍDIA POR LINK</p>
-        <h1 id="page-title">Baixe mídias por link.</h1>
-        <p class="hero-copy">Cole o link de uma publicação ou mídia compatível para visualizar a prévia e iniciar o download.</p>
-
-        <div class="media-types" aria-label="Tipos aceitos">
-          <span>Vídeo</span><span>Imagem</span><span>Áudio</span><span>Link direto</span>
+        <div class="tool-tabs" role="tablist" aria-label="Ferramentas do SOFT Downloaders">
+          <button class="tool-tab is-active" id="mediaTab" type="button" role="tab" aria-selected="true" aria-controls="mediaToolPanel">Baixar mídia</button>
+          <button class="tool-tab" id="mp3Tab" type="button" role="tab" aria-selected="false" aria-controls="mp3ToolPanel">Vídeo para MP3</button>
         </div>
 
-        <form class="download-form" id="downloadForm" novalidate>
-          <label class="sr-only" for="mediaUrl">Cole o link da mídia</label>
-          <input id="mediaUrl" name="mediaUrl" type="url" inputmode="url" autocomplete="url" placeholder="Cole aqui o link da mídia" required />
-          <button type="button" class="clear-button" id="clearButton" aria-label="Limpar link" hidden>×</button>
-          <button type="button" class="paste-button" id="pasteButton">Colar</button>
-          <button type="submit" class="download-button">Analisar</button>
-        </form>
-        <p class="form-note" id="formNote">Compatível com links públicos de redes sociais suportadas e arquivos diretos de mídia.</p>
+        <div class="tool-panel" id="mediaToolPanel" role="tabpanel" aria-labelledby="mediaTab">
+          <p class="eyebrow">MÍDIA POR LINK</p>
+          <h1 id="page-title">Baixe mídias por link.</h1>
+          <p class="hero-copy">Cole o link de uma publicação ou mídia compatível para visualizar a prévia e iniciar o download.</p>
 
+          <div class="media-types" aria-label="Tipos aceitos">
+            <span>Vídeo</span><span>Imagem</span><span>Áudio</span><span>Link direto</span>
+          </div>
+
+          <form class="download-form" id="downloadForm" novalidate>
+            <label class="sr-only" for="mediaUrl">Cole o link da mídia</label>
+            <input id="mediaUrl" name="mediaUrl" type="url" inputmode="url" autocomplete="url" placeholder="Cole aqui o link da mídia" required />
+            <button type="button" class="clear-button" id="clearButton" aria-label="Limpar link" hidden>×</button>
+            <button type="button" class="paste-button" id="pasteButton">Colar</button>
+            <button type="submit" class="download-button">Analisar</button>
+          </form>
+          <p class="form-note" id="formNote">Compatível com links públicos de redes sociais suportadas e arquivos diretos de mídia.</p>
+        </div>
+
+        <div class="tool-panel" id="mp3ToolPanel" role="tabpanel" aria-labelledby="mp3Tab" hidden>
+          <p class="eyebrow">VÍDEO PARA MP3</p>
+          <h1>Converta vídeo para MP3.</h1>
+          <p class="hero-copy">Cole o link de um vídeo público compatível para gerar somente o áudio em MP3.</p>
+
+          <div class="media-types" aria-label="Conversão de vídeo">
+            <span>Vídeo</span><span>MP3</span><span>Áudio 192 kbps</span>
+          </div>
+
+          <form class="download-form" id="mp3Form" novalidate>
+            <label class="sr-only" for="mp3Url">Cole o link do vídeo</label>
+            <input id="mp3Url" name="mp3Url" type="url" inputmode="url" autocomplete="url" placeholder="Cole aqui o link do vídeo" required />
+            <button type="button" class="clear-button" id="mp3ClearButton" aria-label="Limpar link" hidden>×</button>
+            <button type="button" class="paste-button" id="mp3PasteButton">Colar</button>
+            <button type="submit" class="download-button">Gerar MP3</button>
+          </form>
+          <p class="form-note" id="mp3FormNote">A conversão é feita somente quando você usa esta área.</p>
+        </div>
       </section>
 
       <section class="steps" id="como-funciona" aria-labelledby="steps-title">
@@ -63,6 +88,7 @@
         <h2 id="faq-title">Perguntas frequentes</h2>
         <details><summary>Quais links posso usar?</summary><p>Links públicos das plataformas compatíveis e URLs diretas de mídia. Conteúdos privados, removidos ou restritos podem não estar disponíveis.</p></details>
         <details><summary>Preciso criar uma conta?</summary><p>Não. Basta colar um link público compatível, analisar a mídia e iniciar o download.</p></details>
+        <details><summary>Como transformar um vídeo em MP3?</summary><p>Abra a opção Vídeo para MP3, cole o link público do vídeo e gere o arquivo de áudio.</p></details>
       </section>
     </main>
 

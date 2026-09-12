@@ -2,6 +2,14 @@ const form = document.querySelector('#downloadForm');
 const input = document.querySelector('#mediaUrl');
 const note = document.querySelector('#formNote');
 const clearButton = document.querySelector('#clearButton');
+const mp3Form = document.querySelector('#mp3Form');
+const mp3Input = document.querySelector('#mp3Url');
+const mp3Note = document.querySelector('#mp3FormNote');
+const mp3ClearButton = document.querySelector('#mp3ClearButton');
+const mediaTab = document.querySelector('#mediaTab');
+const mp3Tab = document.querySelector('#mp3Tab');
+const mediaToolPanel = document.querySelector('#mediaToolPanel');
+const mp3ToolPanel = document.querySelector('#mp3ToolPanel');
 const resultScreen = document.querySelector('#resultScreen');
 const resultBack = document.querySelector('#resultBack');
 const resultLoading = document.querySelector('#resultLoading');
@@ -16,6 +24,7 @@ const carouselItems = document.querySelector('#carouselItems');
 const downloadStatus = document.querySelector('#downloadStatus');
 
 const DEFAULT_NOTE = 'Aceita links diretos para arquivos públicos: MP4, WebM, MP3, JPG, PNG e WebP.';
+const DEFAULT_MP3_NOTE = 'A conversão é feita somente quando você usa esta área.';
 
 const WORKER_MEDIA_HOST = 'api.forgeaioficial.online';
 let activeResultItems = [];
@@ -32,7 +41,26 @@ function syncClearButton() {
   if (clearButton) clearButton.hidden = !input.value.trim();
 }
 
+function syncMp3ClearButton() {
+  if (mp3ClearButton) mp3ClearButton.hidden = !mp3Input.value.trim();
+}
+
+function setActiveTool(tool) {
+  const useMp3 = tool === 'mp3';
+  mediaTab.classList.toggle('is-active', !useMp3);
+  mp3Tab.classList.toggle('is-active', useMp3);
+  mediaTab.setAttribute('aria-selected', String(!useMp3));
+  mp3Tab.setAttribute('aria-selected', String(useMp3));
+  mediaToolPanel.hidden = useMp3;
+  mp3ToolPanel.hidden = !useMp3;
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+}
+
+mediaTab.addEventListener('click', () => setActiveTool('media'));
+mp3Tab.addEventListener('click', () => setActiveTool('mp3'));
+
 input.addEventListener('input', syncClearButton);
+mp3Input.addEventListener('input', syncMp3ClearButton);
 
 document.querySelector('#pasteButton').addEventListener('click', async () => {
   try {
@@ -41,6 +69,16 @@ document.querySelector('#pasteButton').addEventListener('click', async () => {
     input.focus();
   } catch {
     input.focus();
+  }
+});
+
+document.querySelector('#mp3PasteButton').addEventListener('click', async () => {
+  try {
+    mp3Input.value = await navigator.clipboard.readText();
+    syncMp3ClearButton();
+    mp3Input.focus();
+  } catch {
+    mp3Input.focus();
   }
 });
 
@@ -54,7 +92,18 @@ if (clearButton) {
   });
 }
 
+if (mp3ClearButton) {
+  mp3ClearButton.addEventListener('click', (event) => {
+    event.preventDefault();
+    mp3Input.value = '';
+    syncMp3ClearButton();
+    mp3Input.blur();
+    mp3ClearButton.blur();
+  });
+}
+
 syncClearButton();
+syncMp3ClearButton();
 
 resultBack.addEventListener('click', closeResultScreen);
 document.addEventListener('keydown', (event) => {
@@ -136,6 +185,66 @@ form.addEventListener('submit', async (event) => {
   result.hidden = false;
 });
 
+mp3Form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const rawUrl = mp3Input.value.trim();
+  if (!rawUrl) return showMp3FormError('Cole um link de vídeo para converter.');
+
+  mp3Input.blur();
+  openResultScreen('Analisando o vídeo…');
+  mp3Note.className = 'form-note';
+  mp3Note.textContent = DEFAULT_MP3_NOTE;
+
+  let resolved;
+  try {
+    const response = await fetch('/api/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: rawUrl }),
+    });
+    resolved = await response.json();
+    if (!response.ok) throw new Error(resolved.error || 'Não foi possível analisar o link.');
+  } catch (error) {
+    return showResultError(error.message || 'Não foi possível analisar o link.');
+  }
+
+  if (resolved.status === 'unsupported') {
+    return showResultError(resolved.message || 'Este link não é compatível com a conversão para MP3.');
+  }
+  if (resolved.status === 'ready' && resolved.type !== 'video') {
+    return showResultError('Esta área aceita links de vídeo. Para fotos ou áudios, use Baixar mídia.');
+  }
+
+  setResultLoading('Preparando o vídeo para MP3…');
+  let data;
+  try {
+    const extraction = await fetch('/api/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: rawUrl }),
+    });
+    data = await extraction.json();
+    if (!extraction.ok) throw new Error(data.error || 'Não foi possível preparar o vídeo.');
+  } catch (error) {
+    return showResultError(error.message || 'Não foi possível preparar o vídeo.');
+  }
+
+  if (data.status !== 'ready') {
+    return showResultError(data.message || 'Este vídeo ainda não é compatível com a conversão para MP3.');
+  }
+
+  const items = Array.isArray(data.items) && data.items.length ? data.items : [data];
+  const video = items.find((item) => mediaTypeForDownload(item) === 'video' && item.proxy_id);
+  if (!video) {
+    return showResultError('Não encontramos um vídeo com áudio disponível neste link.');
+  }
+
+  renderMp3Result(video);
+  resultLoading.hidden = true;
+  resultError.hidden = true;
+  result.hidden = false;
+});
+
 function openResultScreen(message) {
   resetResult();
   resultScreen.hidden = false;
@@ -154,7 +263,7 @@ function closeResultScreen() {
 
 function resetResult() {
   result.hidden = true;
-  result.classList.remove('is-carousel');
+  result.classList.remove('is-carousel', 'is-mp3');
   resultStage.classList.remove('carousel-mode');
   resultLoading.hidden = true;
   resultError.hidden = true;
@@ -394,6 +503,51 @@ function renderMedia(data) {
   downloadLink.dataset.filename = data.filename || 'soft-download';
 }
 
+function renderMp3Result(data) {
+  result.classList.add('is-mp3');
+  result.classList.remove('is-carousel');
+  resultStage.classList.remove('carousel-mode');
+  preview.dataset.type = 'mp3';
+  carouselItems.hidden = true;
+  carouselItems.replaceChildren();
+
+  const card = document.createElement('article');
+  card.className = 'mp3-result-card';
+
+  const cover = document.createElement('div');
+  cover.className = 'mp3-cover';
+  if (data.thumbnail) {
+    const image = document.createElement('img');
+    image.src = data.thumbnail;
+    image.alt = '';
+    image.addEventListener('error', () => {
+      image.remove();
+      cover.classList.add('is-fallback');
+    });
+    cover.append(image);
+  } else {
+    cover.classList.add('is-fallback');
+  }
+
+  const details = document.createElement('div');
+  details.className = 'mp3-details';
+  const title = document.createElement('strong');
+  title.textContent = data.title || 'Vídeo pronto para converter';
+  const format = document.createElement('span');
+  format.textContent = 'MP3 • 192 kbps';
+  details.append(title, format);
+  card.append(cover, details);
+  preview.replaceChildren(card);
+
+  const mp3Filename = String(data.filename || 'soft-download.mp4').replace(/\.[^.]+$/, '') + '.mp3';
+  downloadLink.hidden = false;
+  downloadLink.href = '#';
+  downloadLink.textContent = 'BAIXAR MP3';
+  downloadLink.dataset.mode = 'mp3';
+  downloadLink.dataset.mediaUrl = proxyMp3Url(data.proxy_id);
+  downloadLink.dataset.filename = mp3Filename;
+}
+
 function renderCarousel(items) {
   delete preview.dataset.type;
   preview.replaceChildren();
@@ -504,14 +658,19 @@ async function downloadMedia(mediaUrl, filename, button) {
   const originalLabel = button?.textContent;
   let restoreTimer;
 
+  const parsed = new URL(mediaUrl, window.location.href);
+  const isMp3Download = parsed.searchParams.get('mp3') === '1';
   if (button) {
     button.disabled = true;
-    button.textContent = button === downloadLink ? 'Preparando download…' : '…';
+    button.textContent = button === downloadLink
+      ? (isMp3Download ? 'Gerando MP3…' : 'Preparando download…')
+      : '…';
   }
-  showDownloadStatus('Preparando seu download… aguarde alguns segundos.');
+  showDownloadStatus(isMp3Download
+    ? 'Gerando o MP3… aguarde alguns segundos.'
+    : 'Preparando seu download… aguarde alguns segundos.');
 
   try {
-    const parsed = new URL(mediaUrl, window.location.href);
     const isWorkerDownload = parsed.hostname === 'api.forgeaioficial.online' && parsed.pathname === '/media';
 
     if (isWorkerDownload) {
@@ -523,7 +682,10 @@ async function downloadMedia(mediaUrl, filename, button) {
       transferFrame.setAttribute('aria-hidden', 'true');
       transferFrame.src = mediaUrl;
       document.body.append(transferFrame);
-      window.setTimeout(() => transferFrame.remove(), 120000);
+      window.setTimeout(
+        () => transferFrame.remove(),
+        isMp3Download ? 2 * 60 * 60 * 1000 : 120000,
+      );
 
       restoreTimer = window.setTimeout(() => {
         if (button) {
@@ -577,6 +739,16 @@ function hideDownloadStatus() {
 function showFormError(message) {
   note.className = 'form-note error';
   note.textContent = message;
+}
+
+function showMp3FormError(message) {
+  mp3Note.className = 'form-note error';
+  mp3Note.textContent = message;
+}
+
+function proxyMp3Url(proxyId) {
+  if (!proxyId) return '';
+  return `https://${WORKER_MEDIA_HOST}/media?id=${encodeURIComponent(proxyId)}&mp3=1&dl=1`;
 }
 
 function proxyMediaUrl(url, source, proxyId, download = false) {

@@ -1,6 +1,8 @@
+import ipaddress
 import json
 import os
 import re
+import socket
 from html import unescape
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse
@@ -13,6 +15,7 @@ ALLOWED_HOSTS = (
 )
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif", "avif"}
 AUDIO_EXTENSIONS = {"mp3", "m4a", "wav", "ogg", "opus", "aac"}
+DIRECT_VIDEO_EXTENSIONS = {"mp4", "webm", "mov", "m4v"}
 
 
 class handler(BaseHTTPRequestHandler):
@@ -23,8 +26,15 @@ class handler(BaseHTTPRequestHandler):
             source_url = str(payload.get("url", "")).strip()
             parsed = urlparse(source_url)
             host = parsed.hostname.lower().removeprefix("www.") if parsed.hostname else ""
-            if parsed.scheme not in ("http", "https") or not any(host == item or host.endswith("." + item) for item in ALLOWED_HOSTS):
-                return self.respond(400, {"error": "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai, Dailymotion, SoundCloud, LinkedIn, Twitch ou Kick."})
+            direct_extension = parsed.path.rsplit(".", 1)[-1].lower() if "." in parsed.path else ""
+            supported_host = any(host == item or host.endswith("." + item) for item in ALLOWED_HOSTS)
+            direct_video = direct_extension in DIRECT_VIDEO_EXTENSIONS
+            if parsed.scheme not in ("http", "https") or parsed.username or parsed.password:
+                return self.respond(400, {"error": "Use um link público http ou https."})
+            if not supported_host and not direct_video:
+                return self.respond(400, {"error": "Use um link público de uma plataforma compatível ou um arquivo direto de vídeo."})
+            if direct_video and not supported_host and not is_public_hostname(host):
+                return self.respond(400, {"error": "Este endereço não pode ser analisado."})
 
             worker_url = os.environ.get("SOFT_WORKER_URL", "https://api.forgeaioficial.online").rstrip("/")
             worker_secret = os.environ.get("SOFT_WORKER_SECRET", "")
@@ -78,6 +88,25 @@ class handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+def is_public_hostname(host):
+    if not host or host == "localhost" or host.endswith(".local"):
+        return False
+    try:
+        addresses = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    if not addresses:
+        return False
+    for entry in addresses:
+        address = entry[4][0].split("%", 1)[0]
+        try:
+            if not ipaddress.ip_address(address).is_global:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
 def detect_source(host):
     if "instagram" in host:
         return "instagram"
@@ -85,6 +114,8 @@ def detect_source(host):
         return "tiktok"
     if "youtube" in host or host == "youtu.be":
         return "youtube"
+    if "facebook" in host or host == "fb.watch":
+        return "facebook"
     if host == "x.com" or host.endswith(".x.com") or "twitter.com" in host:
         return "twitter"
     if host == "threads.com" or host.endswith(".threads.com") or host == "threads.net" or host.endswith(".threads.net"):
@@ -107,7 +138,7 @@ def detect_source(host):
         return "twitch"
     if host == "kick.com" or host.endswith(".kick.com"):
         return "kick"
-    return "facebook"
+    return "direct"
 
 
 def media_type(info, extension):
