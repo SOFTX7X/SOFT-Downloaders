@@ -2033,7 +2033,11 @@ def _threads_image_candidate(media):
         if not isinstance(candidate, dict):
             continue
         url = candidate.get('url')
-        if not isinstance(url, str) or not url.startswith('https://'):
+        if (
+            not isinstance(url, str)
+            or not url.startswith('https://')
+            or _threads_is_static_ui_asset(url)
+        ):
             continue
         width = int(candidate.get('width') or 0)
         height = int(candidate.get('height') or 0)
@@ -2076,7 +2080,11 @@ def _threads_video_candidate(media):
         if not isinstance(version, dict):
             continue
         url = version.get('url')
-        if not isinstance(url, str) or not url.startswith('https://'):
+        if (
+            not isinstance(url, str)
+            or not url.startswith('https://')
+            or _threads_is_static_ui_asset(url)
+        ):
             continue
         path = url.split('?', 1)[0]
         if path in seen:
@@ -2140,6 +2148,21 @@ def _threads_canonical_value(page):
     return None
 
 
+def _threads_is_static_ui_asset(url):
+    """Bloqueia vídeos/imagens da interface do Threads (logo/login), não mídia do post."""
+    if not isinstance(url, str) or not url:
+        return False
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or '').lower()
+        path = (parsed.path or '').lower()
+    except Exception:
+        return False
+    if host == 'static.cdninstagram.com' or host.endswith('.static.cdninstagram.com'):
+        return '/rsrc.php/' in path or path.startswith('/rsrc.php/')
+    return False
+
+
 def _threads_asset_key(url):
     if not isinstance(url, str) or not url:
         return ''
@@ -2180,7 +2203,7 @@ def _threads_raw_mp4_urls(page):
     seen = set()
     for match in re.finditer(r'https://[^\s"\'<>]+?\.mp4(?:\?[^\s"\'<>]*)?', normalized, re.IGNORECASE):
         url = match.group(0).rstrip('\\,]}')
-        if url in seen:
+        if _threads_is_static_ui_asset(url) or url in seen:
             continue
         seen.add(url)
         urls.append(url)
@@ -2318,8 +2341,14 @@ def extract_threads_public_media(source_url):
         # principal não fecha como JSON. Só usamos o fallback quando existe um
         # único MP4, para não confundir o post com recomendações/replies.
         raw_mp4 = _threads_raw_mp4_urls(current_page)
-        if 'video_versions' in current_page and len(raw_mp4) == 1:
-            title = _threads_meta_value(current_page, 'og:title', 'twitter:title') or 'Vídeo do Threads'
+        page_title = _threads_meta_value(current_page, 'og:title', 'twitter:title') or ''
+        login_wall = bool(
+            re.search(r'(threads\s*[•|-]?\s*(entrar|log\s*in)|error=invalid_post)', current_page, re.IGNORECASE)
+            or re.search(r'(entrar|log\s*in)', page_title, re.IGNORECASE)
+            or 'error=invalid_post' in str(current_url)
+        )
+        if not login_wall and 'video_versions' in current_page and len(raw_mp4) == 1:
+            title = page_title or 'Vídeo do Threads'
             item = {
                 'status': 'ready',
                 'source': 'threads',
