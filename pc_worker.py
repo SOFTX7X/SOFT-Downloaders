@@ -7,6 +7,7 @@ Não armazena links, contas ou arquivos de quem usa o site.
 import json
 import hmac
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -108,6 +109,7 @@ def default_proxy_headers(source):
         "twitter": "https://x.com/",
         "pinterest": "https://www.pinterest.com/",
         "reddit": "https://www.reddit.com/",
+        "kwai": "https://www.kwai.com/",
     }
     return {
         "User-Agent": "Mozilla/5.0",
@@ -251,7 +253,7 @@ def prepare_media_response(media, source_url):
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -277,7 +279,7 @@ def prepare_media_response(media, source_url):
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -388,7 +390,7 @@ def extract_media(source_url):
     if parsed.scheme not in ("http", "https") or not any(
         host == item or host.endswith("." + item) for item in ALLOWED_HOSTS
     ):
-        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest ou Reddit."
+        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit ou Kwai."
 
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
@@ -397,10 +399,26 @@ def extract_media(source_url):
     is_twitter = host == "x.com" or host.endswith(".x.com") or "twitter.com" in host
     is_pinterest = host == "pin.it" or host == "pinterest.com" or host.endswith(".pinterest.com")
     is_reddit = host == "redd.it" or host == "reddit.com" or host.endswith(".reddit.com")
+    is_kwai = (
+        host == "kwai.com" or host.endswith(".kwai.com")
+        or host == "kwai-video.com" or host.endswith(".kwai-video.com")
+        or host == "kw.ai" or host.endswith(".kw.ai")
+    )
     tiktok_cookiefile = None
     tiktok_info = None
     youtube_info = None
     facebook_info = None
+
+    # Kwai usa links curtos com redirecionamento e expõe a mídia pública
+    # em metadados/JSON da própria página. Tentamos esse caminho antes do
+    # extrator genérico para preservar links compartilhados pelo app.
+    if is_kwai:
+        try:
+            kwai_media = extract_kwai_public_media(source_url)
+            if kwai_media:
+                return kwai_media, None
+        except Exception as error:
+            print(f"Falha no extrator público do Kwai: {type(error).__name__}: {error}")
 
     # Reddit expõe metadados públicos em JSON para posts acessíveis sem login.
     # Usamos essa fonte primeiro porque ela preserva galerias de imagens e
@@ -493,6 +511,9 @@ def extract_media(source_url):
 
     if not media and is_reddit:
         return None, "Não foi possível ler esta publicação do Reddit agora. Confirme se ela é pública e tente novamente."
+
+    if not media and is_kwai:
+        return None, "Não foi possível ler esta publicação do Kwai agora. Confirme se ela é pública e tente novamente."
 
     if not media:
         if tiktok_cookiefile:
@@ -774,6 +795,251 @@ def _x_original_image_url(media_url):
         query["format"] = "jpg" if extension == "jpeg" else extension
     query["name"] = "orig"
     return urlunparse(parsed._replace(query=urlencode(query)))
+
+
+
+def _kwai_clean_url(value):
+    if not value:
+        return None
+    from html import unescape as html_unescape
+    value = html_unescape(str(value)).strip().strip('"\'')
+    value = value.replace("\\u0026", "&").replace("\\u003d", "=")
+    value = value.replace("\\/", "/").replace("&amp;", "&")
+    if value.startswith("//"):
+        value = "https:" + value
+    if not value.startswith("https://"):
+        return None
+    return value
+
+
+def _kwai_meta_value(page, *properties):
+    import re
+    from html import unescape as html_unescape
+    for prop in properties:
+        escaped = re.escape(prop)
+        patterns = (
+            rf'<meta[^>]+(?:property|name)=["\']{escaped}["\'][^>]+content=["\']([^"\']+)["\']',
+            rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{escaped}["\']',
+        )
+        for pattern in patterns:
+            match = re.search(pattern, page, re.IGNORECASE)
+            if match:
+                return _kwai_clean_url(match.group(1)) if "video" in prop or "image" in prop else html_unescape(match.group(1)).strip()
+    return None
+
+
+def _kwai_fetch_page(source_url):
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+    if curl_requests is not None:
+        response = curl_requests.get(
+            source_url,
+            headers=headers,
+            impersonate="chrome",
+            default_headers=True,
+            allow_redirects=True,
+            timeout=20,
+        )
+        response.raise_for_status()
+        return response.text, str(response.url), headers
+
+    with urlopen(Request(source_url, headers=headers), timeout=20) as response:
+        return response.read().decode("utf-8", "ignore"), response.geturl(), headers
+
+
+def _kwai_media_extension(media_url, default):
+    path = urlparse(media_url or "").path.lower()
+    suffix = Path(path).suffix.lower().lstrip(".")
+    if suffix in {"mp4", "mov", "m4v", "webm", "jpg", "jpeg", "png", "webp", "gif"}:
+        return "jpg" if suffix == "jpeg" else suffix
+    return default
+
+
+def _kwai_collect_json_media(node, videos, images, titles, parent_key=""):
+    video_parent_keys = {
+        "mainmvurls", "playurls", "playurl", "videourls", "videourl",
+        "srcnomark", "srcnowatermark", "photourl", "manifest",
+    }
+    image_parent_keys = {
+        "images", "imageurls", "imageurl", "photourls", "coverurls",
+        "coverurl", "poster", "thumbnail", "thumbnails",
+    }
+    title_keys = {"caption", "title", "description", "desc", "content"}
+
+    if isinstance(node, dict):
+        for key, value in node.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in title_keys and isinstance(value, str) and value.strip():
+                titles.append(value.strip())
+            next_parent = normalized
+            if normalized in {"url", "urls", "src"} and parent_key in video_parent_keys.union(image_parent_keys):
+                next_parent = parent_key
+            _kwai_collect_json_media(value, videos, images, titles, next_parent)
+        return
+
+    if isinstance(node, list):
+        for value in node:
+            _kwai_collect_json_media(value, videos, images, titles, parent_key)
+        return
+
+    if not isinstance(node, str):
+        return
+
+    media_url = _kwai_clean_url(node)
+    if not media_url:
+        return
+
+    lower = media_url.lower()
+    is_image_url = any(ext in lower for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif"))
+    if (parent_key in video_parent_keys or ".mp4" in lower or ".m3u8" in lower) and not is_image_url:
+        # URLs de vídeo do Kwai muitas vezes são assinadas e não terminam em .mp4.
+        # O contexto do campo (mainMvUrls/playUrl/etc.) é mais confiável que a extensão.
+        videos.append(media_url)
+    elif parent_key in image_parent_keys or is_image_url:
+        images.append(media_url)
+
+
+def extract_kwai_public_media(source_url):
+    """Extrai mídia pública do Kwai, incluindo links curtos compartilhados pelo app."""
+    import re
+
+    page, resolved_url, request_headers = _kwai_fetch_page(source_url)
+    if not page:
+        return None
+
+    title = (
+        _kwai_meta_value(page, "og:title", "twitter:title")
+        or "Mídia do Kwai"
+    )
+    thumbnail = _kwai_meta_value(page, "og:image", "twitter:image")
+    meta_video = _kwai_meta_value(
+        page,
+        "og:video:secure_url",
+        "og:video:url",
+        "og:video",
+        "twitter:player:stream",
+    )
+
+    videos = []
+    images = []
+    titles = []
+
+    if meta_video:
+        videos.append(meta_video)
+
+    # JSONs completos usados por páginas SSR/Next.
+    script_patterns = (
+        r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>',
+        r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+    )
+    for pattern in script_patterns:
+        for raw in re.findall(pattern, page, re.IGNORECASE | re.DOTALL):
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                continue
+            _kwai_collect_json_media(payload, videos, images, titles)
+
+    # Alguns builds inserem mainMvUrls e URLs assinadas em JavaScript, não em JSON puro.
+    # Procuramos primeiro dentro de janelas próximas de campos claramente de vídeo.
+    for match in re.finditer(
+        r'(?i)(mainMvUrls|playUrl|playUrls|videoUrl|videoUrls|srcNoMark|srcNoWatermark)',
+        page,
+    ):
+        window = page[match.start():match.start() + 6000]
+        for raw_url in re.findall(r'https?:\\?/\\?/[^"\'<>\s]+', window):
+            candidate = _kwai_clean_url(raw_url)
+            if candidate and not any(ext in candidate.lower() for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")):
+                videos.append(candidate)
+
+    # Fallback seguro para MP4 explícito no HTML.
+    for raw_url in re.findall(r'https?:\\?/\\?/[^"\'<>\s]+?\.mp4(?:\?[^"\'<>\s]*)?', page, re.IGNORECASE):
+        candidate = _kwai_clean_url(raw_url)
+        if candidate:
+            videos.append(candidate)
+
+    # Imagens explícitas em estruturas de photo/image; não usamos og:image sozinho
+    # como mídia principal porque em posts de vídeo ele é apenas a capa.
+    for match in re.finditer(r'(?i)(imageUrls|photoUrls|images)', page):
+        window = page[match.start():match.start() + 5000]
+        for raw_url in re.findall(r'https?:\\?/\\?/[^"\'<>\s]+', window):
+            candidate = _kwai_clean_url(raw_url)
+            if candidate and any(ext in candidate.lower() for ext in (".jpg", ".jpeg", ".png", ".webp")):
+                images.append(candidate)
+
+    def unique(values):
+        seen = set()
+        result = []
+        for value in values:
+            clean = _kwai_clean_url(value)
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            result.append(clean)
+        return result
+
+    videos = unique(videos)
+    images = unique(images)
+    if titles and (not title or title == "Mídia do Kwai"):
+        title = titles[0][:180]
+
+    # Para vídeo, priorizamos sempre a mídia em vez da capa.
+    if videos:
+        video_url = videos[0]
+        extension = _kwai_media_extension(video_url, "mp4")
+        if extension not in {"mp4", "mov", "m4v", "webm"}:
+            extension = "mp4"
+        item = {
+            "status": "ready",
+            "source": "kwai",
+            "type": "video",
+            "url": video_url,
+            "title": title,
+            "thumbnail": thumbnail or (images[0] if images else None),
+            "filename": f"{safe_filename(title)}.{extension}",
+            "media_count": 1,
+            "http_headers": {
+                "User-Agent": request_headers["User-Agent"],
+                "Referer": resolved_url or "https://www.kwai.com/",
+            },
+        }
+        primary = dict(item)
+        primary["items"] = [item]
+        return primary
+
+    # Photo posts: só retornamos URLs encontradas em campos explícitos de imagem.
+    if images:
+        items = []
+        for index, image_url in enumerate(images[:20], start=1):
+            extension = _kwai_media_extension(image_url, "jpg")
+            item_title = title if len(images) == 1 else f"{title} {index}"
+            items.append({
+                "status": "ready",
+                "source": "kwai",
+                "type": "image",
+                "url": image_url,
+                "title": item_title,
+                "thumbnail": image_url,
+                "filename": f"{safe_filename(item_title)}.{extension}",
+                "media_count": 1,
+                "http_headers": {
+                    "User-Agent": request_headers["User-Agent"],
+                    "Referer": resolved_url or "https://www.kwai.com/",
+                },
+            })
+        primary = dict(items[0])
+        primary["items"] = items
+        primary["media_count"] = len(items)
+        primary["title"] = title
+        return primary
+
+    return None
 
 
 def _reddit_post_id(source_url):

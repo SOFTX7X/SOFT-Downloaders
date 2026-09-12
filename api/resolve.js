@@ -52,6 +52,13 @@ function identifySource(url) {
   if (host === 'redd.it' || host === 'reddit.com' || host.endsWith('.reddit.com')) {
     return pending('reddit', 'Publicação pública do Reddit identificada.');
   }
+  if (
+    host === 'kwai.com' || host.endsWith('.kwai.com') ||
+    host === 'kwai-video.com' || host.endsWith('.kwai-video.com') ||
+    host === 'kw.ai' || host.endsWith('.kw.ai')
+  ) {
+    return pending('kwai', 'Publicação pública do Kwai identificada.');
+  }
   return { status: 'unsupported', source: 'other', message: 'Este link não parece ser uma mídia direta nem uma plataforma compatível.' };
 }
 
