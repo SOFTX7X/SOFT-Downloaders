@@ -59,6 +59,9 @@ function identifySource(url) {
   ) {
     return pending('kwai', 'Publicação pública do Kwai identificada.');
   }
+  if (host === 'vimeo.com' || host.endsWith('.vimeo.com')) {
+    return pending('vimeo', 'Vídeo público do Vimeo identificado.');
+  }
   return { status: 'unsupported', source: 'other', message: 'Este link não parece ser uma mídia direta nem uma plataforma compatível.' };
 }
 

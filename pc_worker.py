@@ -110,6 +110,7 @@ def default_proxy_headers(source):
         "pinterest": "https://www.pinterest.com/",
         "reddit": "https://www.reddit.com/",
         "kwai": "https://www.kwai.com/",
+        "vimeo": "https://vimeo.com/",
     }
     return {
         "User-Agent": "Mozilla/5.0",
@@ -137,6 +138,7 @@ def cache_media(
     tiktok_info=None,
     tiktok_cookiefile=None,
     youtube_info=None,
+    vimeo_info=None,
     instagram_info=None,
     facebook_info=None,
     item_index=None,
@@ -149,6 +151,7 @@ def cache_media(
     info_payload = (
         tiktok_info if source == "tiktok" else
         youtube_info if source == "youtube" else
+        vimeo_info if source == "vimeo" else
         instagram_info if source == "instagram" else
         facebook_info if source == "facebook" else
         None
@@ -234,10 +237,12 @@ def prepare_media_response(media, source_url):
     tiktok_info = media.pop("_tiktok_info", None)
     tiktok_cookiefile = media.pop("_tiktok_cookiefile", None)
     youtube_info = media.pop("_youtube_info", None)
+    vimeo_info = media.pop("_vimeo_info", None)
     facebook_info = media.pop("_facebook_info", None)
     items = media.get("items") if isinstance(media.get("items"), list) else []
     tiktok_cache_used = False
     youtube_cache_used = False
+    vimeo_cache_used = False
 
     for item_index, item in enumerate(items, start=1):
         if not item or not item.get("url"):
@@ -245,6 +250,7 @@ def prepare_media_response(media, source_url):
         item_source = item.get("source") or media.get("source")
         use_tiktok_bundle = item_source == "tiktok" and not tiktok_cache_used
         use_youtube_bundle = item_source == "youtube" and not youtube_cache_used
+        use_vimeo_bundle = item_source == "vimeo" and not vimeo_cache_used
         instagram_info = item.pop("_instagram_info", None) if item_source == "instagram" else None
         instagram_index = item.pop("_instagram_index", item_index) if item_source == "instagram" else None
         item_facebook_info = item.pop("_facebook_info", None) if item_source == "facebook" else None
@@ -253,11 +259,12 @@ def prepare_media_response(media, source_url):
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "vimeo") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
             youtube_info=youtube_info if use_youtube_bundle else None,
+            vimeo_info=vimeo_info if use_vimeo_bundle else None,
             instagram_info=instagram_info,
             facebook_info=item_facebook_info,
             item_index=facebook_index if item_source == "facebook" else instagram_index,
@@ -267,6 +274,8 @@ def prepare_media_response(media, source_url):
             tiktok_cache_used = True
         if use_youtube_bundle:
             youtube_cache_used = True
+        if use_vimeo_bundle:
+            vimeo_cache_used = True
         item.pop("http_headers", None)
 
     if items and media.get("url") == items[0].get("url"):
@@ -275,15 +284,17 @@ def prepare_media_response(media, source_url):
         media_source = media.get("source")
         use_tiktok_bundle = media_source == "tiktok" and not tiktok_cache_used
         use_youtube_bundle = media_source == "youtube" and not youtube_cache_used
+        use_vimeo_bundle = media_source == "vimeo" and not vimeo_cache_used
         media["proxy_id"] = cache_media(
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "vimeo") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
             youtube_info=youtube_info if use_youtube_bundle else None,
+            vimeo_info=vimeo_info if use_vimeo_bundle else None,
             instagram_info=media.pop("_instagram_info", None) if media_source == "instagram" else None,
             facebook_info=media.pop("_facebook_info", facebook_info) if media_source == "facebook" else None,
             item_index=(
@@ -297,6 +308,8 @@ def prepare_media_response(media, source_url):
             tiktok_cache_used = True
         if use_youtube_bundle:
             youtube_cache_used = True
+        if use_vimeo_bundle:
+            vimeo_cache_used = True
 
     # Se por algum motivo o TikTok não gerou cache, não deixe cookie temporário órfão.
     if tiktok_cookiefile and not tiktok_cache_used:
@@ -390,7 +403,7 @@ def extract_media(source_url):
     if parsed.scheme not in ("http", "https") or not any(
         host == item or host.endswith("." + item) for item in ALLOWED_HOSTS
     ):
-        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit ou Kwai."
+        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai ou Vimeo."
 
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
@@ -404,9 +417,11 @@ def extract_media(source_url):
         or host == "kwai-video.com" or host.endswith(".kwai-video.com")
         or host == "kw.ai" or host.endswith(".kw.ai")
     )
+    is_vimeo = host == "vimeo.com" or host.endswith(".vimeo.com")
     tiktok_cookiefile = None
     tiktok_info = None
     youtube_info = None
+    vimeo_info = None
     facebook_info = None
 
     # Kwai usa links curtos com redirecionamento e expõe a mídia pública
@@ -475,6 +490,8 @@ def extract_media(source_url):
                 info = extractor.extract_info(source_url, download=False)
                 if is_youtube and info:
                     youtube_info = extractor.sanitize_info(info)
+                if is_vimeo and info:
+                    vimeo_info = extractor.sanitize_info(info)
                 instagram_info = extractor.sanitize_info(info) if is_instagram and info else None
                 facebook_info = extractor.sanitize_info(info) if is_facebook and info else None
             media = normalize_carousel_media(
@@ -483,6 +500,8 @@ def extract_media(source_url):
         except Exception as error:
             if is_youtube:
                 print(f"Falha na análise do YouTube: {type(error).__name__}: {error}")
+            elif is_vimeo:
+                print(f"Falha na análise do Vimeo: {type(error).__name__}: {error}")
             media = None
 
     # Fallback para publicação de foto única, quando o Instagram não retorna
@@ -528,6 +547,8 @@ def extract_media(source_url):
         media["_tiktok_cookiefile"] = tiktok_cookiefile
     if is_youtube:
         media["_youtube_info"] = youtube_info
+    if is_vimeo:
+        media["_vimeo_info"] = vimeo_info
     if is_facebook and facebook_info:
         media["_facebook_info"] = facebook_info
     return media, None
@@ -583,6 +604,77 @@ def normalize_youtube_media(info, host):
         }
 
     return None
+
+
+def normalize_vimeo_media(info, host):
+    """Normaliza um vídeo público do Vimeo para uma prévia MP4 progressiva.
+
+    A thumbnail nunca é tratada como a mídia principal. Preferimos uma faixa
+    MP4/H.264 com áudio embutido; se ela não existir, usamos uma faixa MP4 de
+    vídeo apenas para a prévia. O download final é preparado pelo yt-dlp.
+    """
+    if not info:
+        return None
+
+    raw_items = info.get("entries") if info.get("entries") else [info]
+    entry = next((item for item in raw_items if item), None)
+    if not entry:
+        return None
+
+    candidates = []
+    for fmt in entry.get("formats") or []:
+        if not isinstance(fmt, dict):
+            continue
+        media_url = fmt.get("url")
+        if not isinstance(media_url, str) or not media_url.startswith("https://"):
+            continue
+        ext = str(fmt.get("ext") or "").lower()
+        vcodec = str(fmt.get("vcodec") or "none").lower()
+        acodec = str(fmt.get("acodec") or "none").lower()
+        protocol = str(fmt.get("protocol") or "").lower()
+        if ext != "mp4" or vcodec == "none":
+            continue
+
+        height = fmt.get("height") or 0
+        tbr = fmt.get("tbr") or 0
+        progressive = protocol in ("http", "https") or protocol.startswith("http")
+        combined = acodec != "none"
+        h264 = vcodec.startswith(("avc", "h264"))
+        preview_size = 1 if height and height <= 720 else 0
+        score = (
+            1 if progressive else 0,
+            1 if combined else 0,
+            1 if h264 else 0,
+            preview_size,
+            height,
+            tbr,
+        )
+        candidates.append((score, fmt))
+
+    if candidates:
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        selected = candidates[0][1]
+        media_url = selected.get("url")
+        headers = selected.get("http_headers") or entry.get("http_headers") or {}
+    else:
+        media_url = entry.get("url")
+        if not isinstance(media_url, str) or not media_url.startswith("https://"):
+            return None
+        headers = entry.get("http_headers") or {}
+
+    title = entry.get("title") or info.get("title") or "Vídeo do Vimeo"
+    video_id = entry.get("id") or info.get("id") or "video"
+    return {
+        "status": "ready",
+        "source": "vimeo",
+        "type": "video",
+        "url": media_url,
+        "title": title,
+        "thumbnail": entry.get("thumbnail") or info.get("thumbnail"),
+        "filename": f"vimeo-{video_id}.mp4",
+        "media_count": 1,
+        "http_headers": headers,
+    }
 
 
 def select_instagram_video_format(entry):
@@ -2167,6 +2259,15 @@ def normalize_carousel_media(info, host, sanitized_info=None):
         primary["media_count"] = 1
         return primary
 
+    if host == "vimeo.com" or host.endswith(".vimeo.com"):
+        item = normalize_vimeo_media(info, host)
+        if not item:
+            return None
+        primary = dict(item)
+        primary["items"] = [item]
+        primary["media_count"] = 1
+        return primary
+
     raw_items = info.get("entries") if info.get("entries") else [info]
     safe_items = []
     if sanitized_info:
@@ -2292,6 +2393,9 @@ class WorkerHandler(BaseHTTPRequestHandler):
 
         if source == "youtube" and cached:
             return self.proxy_youtube_with_ytdlp(cached, download_requested)
+
+        if source == "vimeo" and cached and download_requested:
+            return self.proxy_vimeo_with_ytdlp(cached)
 
         # A prévia do Instagram continua usando a URL direta para ser rápida.
         # No download final de vídeo, usamos o yt-dlp + FFmpeg para preferir um
@@ -2703,6 +2807,59 @@ class WorkerHandler(BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def proxy_vimeo_with_ytdlp(self, cached):
+        page_url = cached.get("page_url") or cached.get("url")
+        info_path = cached.get("info_path")
+        filename = cached.get("filename") or "vimeo-video.mp4"
+
+        if not page_url and not (info_path and Path(info_path).is_file()):
+            return self.respond(410, {"error": "Este link expirou. Analise o vídeo novamente."})
+
+        format_selector = (
+            "bestvideo[ext=mp4][vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/"
+            "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/"
+            "best[ext=mp4][height<=1080]/best[ext=mp4]/best"
+        )
+
+        with tempfile.TemporaryDirectory(prefix="soft-vimeo-") as temp_dir:
+            output_template = str(Path(temp_dir) / "download.%(ext)s")
+
+            def run_download(use_info_json):
+                command = [
+                    sys.executable, "-m", "yt_dlp",
+                    "--quiet", "--no-warnings", "--no-progress", "--no-playlist",
+                    "-f", format_selector,
+                    "--merge-output-format", "mp4",
+                    "-o", output_template,
+                ]
+                if use_info_json and info_path and Path(info_path).is_file():
+                    command.extend(["--load-info-json", info_path])
+                elif page_url:
+                    command.append(page_url)
+                else:
+                    return None
+                return subprocess.run(
+                    command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+                )
+
+            result = run_download(True)
+            if result is None or result.returncode != 0:
+                detail = (result.stderr if result else "").strip()
+                if detail:
+                    print(f"Falha no download Vimeo via info-json: {detail[-1600:]}")
+                result = run_download(False)
+
+            if result is None or result.returncode != 0:
+                detail = (result.stderr if result else "").strip()
+                print(f"Falha no download Vimeo via yt-dlp: {detail[-1600:]}")
+                return self.respond(502, {"error": "Não foi possível preparar este vídeo do Vimeo."})
+
+            files = [path for path in Path(temp_dir).iterdir() if path.is_file()]
+            if not files:
+                return self.respond(502, {"error": "Não foi possível preparar este vídeo do Vimeo."})
+            media_file = max(files, key=lambda path: path.stat().st_size)
+            return self.send_local_download(media_file, filename, "video/mp4")
 
     def proxy_youtube_with_ytdlp(self, cached, download_requested=False):
         page_url = cached.get("page_url") or cached.get("url")

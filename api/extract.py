@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 from yt_dlp import YoutubeDL
 
 ALLOWED_HOSTS = (
-    "instagram.com", "tiktok.com", "youtube.com", "youtu.be", "facebook.com", "fb.watch", "x.com", "twitter.com", "pinterest.com", "pin.it", "reddit.com", "redd.it", "kwai.com", "kwai-video.com", "kw.ai",
+    "instagram.com", "tiktok.com", "youtube.com", "youtu.be", "facebook.com", "fb.watch", "x.com", "twitter.com", "pinterest.com", "pin.it", "reddit.com", "redd.it", "kwai.com", "kwai-video.com", "kw.ai", "vimeo.com",
 )
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif", "avif"}
 AUDIO_EXTENSIONS = {"mp3", "m4a", "wav", "ogg", "opus", "aac"}
@@ -24,7 +24,7 @@ class handler(BaseHTTPRequestHandler):
             parsed = urlparse(source_url)
             host = parsed.hostname.lower().removeprefix("www.") if parsed.hostname else ""
             if parsed.scheme not in ("http", "https") or not any(host == item or host.endswith("." + item) for item in ALLOWED_HOSTS):
-                return self.respond(400, {"error": "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit ou Kwai."})
+                return self.respond(400, {"error": "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai ou Vimeo."})
 
             worker_url = os.environ.get("SOFT_WORKER_URL", "https://api.forgeaioficial.online").rstrip("/")
             worker_secret = os.environ.get("SOFT_WORKER_SECRET", "")
@@ -93,6 +93,8 @@ def detect_source(host):
         return "reddit"
     if host == "kwai.com" or host.endswith(".kwai.com") or host == "kwai-video.com" or host.endswith(".kwai-video.com") or host == "kw.ai" or host.endswith(".kw.ai"):
         return "kwai"
+    if host == "vimeo.com" or host.endswith(".vimeo.com"):
+        return "vimeo"
     return "facebook"
 
 
