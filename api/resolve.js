@@ -62,6 +62,9 @@ function identifySource(url) {
   if (host === 'soundcloud.com' || host.endsWith('.soundcloud.com')) {
     return pending('soundcloud', 'Faixa pública do SoundCloud identificada.');
   }
+  if (host === 'linkedin.com' || host.endsWith('.linkedin.com')) {
+    return pending('linkedin', 'Publicação pública do LinkedIn identificada.');
+  }
   return { status: 'unsupported', source: 'other', message: 'Este link não parece ser uma mídia direta nem uma plataforma compatível.' };
 }
 function pending(source, message) { return { status: 'pending', source, message }; }

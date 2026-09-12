@@ -45,7 +45,7 @@ WORKER_SECRET = os.environ.get("SOFT_WORKER_SECRET", "")
 MEDIA_HOSTS = (
     "fbcdn.net", "cdninstagram.com", "tiktok.com", "tiktokcdn.com",
     "byteoversea.com", "googlevideo.com", "ytimg.com", "twimg.com", "pinimg.com",
-    "redd.it", "redditmedia.com",
+    "redd.it", "redditmedia.com", "licdn.com",
 )
 MEDIA_CACHE_TTL = 20 * 60
 MEDIA_CACHE = {}
@@ -114,6 +114,7 @@ def default_proxy_headers(source):
         "vimeo": "https://vimeo.com/",
         "dailymotion": "https://www.dailymotion.com/",
         "soundcloud": "https://soundcloud.com/",
+        "linkedin": "https://www.linkedin.com/",
     }
     return {
         "User-Agent": "Mozilla/5.0",
@@ -267,7 +268,7 @@ def prepare_media_response(media, source_url):
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "threads", "pinterest", "reddit", "kwai", "vimeo", "dailymotion", "soundcloud") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "linkedin") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -301,7 +302,7 @@ def prepare_media_response(media, source_url):
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "threads", "pinterest", "reddit", "kwai", "vimeo", "dailymotion", "soundcloud") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "linkedin") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -512,7 +513,7 @@ def extract_media(source_url):
     if parsed.scheme not in ("http", "https") or not any(
         host == item or host.endswith("." + item) for item in ALLOWED_HOSTS
     ):
-        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Threads, Pinterest, Reddit, Kwai, Vimeo, Dailymotion ou SoundCloud."
+        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai, Dailymotion, SoundCloud ou LinkedIn."
 
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
@@ -3004,6 +3005,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 "twitter" if "twimg" in host else
                 "pinterest" if "pinimg" in host else
                 "reddit" if "redd.it" in host or "redditmedia" in host else
+                "linkedin" if "licdn" in host else
                 "instagram"
             )
             headers = default_proxy_headers(source)
