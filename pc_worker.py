@@ -531,6 +531,7 @@ def extract_media(source_url):
     is_vimeo = host == "vimeo.com" or host.endswith(".vimeo.com")
     is_dailymotion = host == "dailymotion.com" or host.endswith(".dailymotion.com") or host == "dai.ly"
     is_soundcloud = host == "soundcloud.com" or host.endswith(".soundcloud.com")
+    is_linkedin = host == "linkedin.com" or host.endswith(".linkedin.com")
     tiktok_cookiefile = None
     tiktok_info = None
     youtube_info = None
@@ -665,6 +666,17 @@ def extract_media(source_url):
             media = extract_facebook_public_metadata(source_url)
         except Exception as error:
             print(f"Falha no fallback público do Facebook: {type(error).__name__}: {error}")
+            media = None
+
+    # O extrator do yt-dlp para LinkedIn é focado em vídeo. Em publicações
+    # públicas com foto, a imagem nativa continua disponível nos metadados
+    # Open Graph da própria página. Usamos esse caminho somente quando o
+    # yt-dlp não encontrou mídia, evitando interferir no fluxo de vídeos.
+    if not media and is_linkedin:
+        try:
+            media = extract_linkedin_public_image(source_url)
+        except Exception as error:
+            print(f"Falha no fallback público do LinkedIn: {type(error).__name__}: {error}")
             media = None
 
     if not media and is_reddit:
@@ -1137,6 +1149,83 @@ def extract_facebook_public_metadata(source_url):
             "media_count": 1,
         }
     return None
+
+def extract_linkedin_public_image(source_url):
+    """Extrai a foto nativa de uma publicação pública do LinkedIn."""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    }
+
+    if curl_requests is not None:
+        response = curl_requests.get(
+            source_url,
+            headers=headers,
+            impersonate="chrome",
+            default_headers=True,
+            allow_redirects=True,
+            timeout=20,
+        )
+        response.raise_for_status()
+        page = response.text
+    else:
+        with urlopen(Request(source_url, headers=headers), timeout=20) as response:
+            page = response.read().decode("utf-8", "ignore")
+
+    if not page:
+        return None
+
+    from html import unescape as html_unescape
+
+    def meta_value(*properties):
+        for prop in properties:
+            escaped = re.escape(prop)
+            patterns = (
+                rf'<meta[^>]+(?:property|name)=["\']{escaped}["\'][^>]+content=["\']([^"\']+)["\']',
+                rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{escaped}["\']',
+            )
+            for pattern in patterns:
+                match = re.search(pattern, page, re.IGNORECASE)
+                if match:
+                    return html_unescape(match.group(1)).replace("&amp;", "&").strip()
+        return None
+
+    image_url = meta_value("og:image", "twitter:image")
+    if not image_url or not image_url.startswith("https://"):
+        return None
+
+    parsed_image = urlparse(image_url)
+    image_host = (parsed_image.hostname or "").lower()
+    image_path = parsed_image.path.lower()
+
+    # Aceitamos somente a imagem nativa do post. Isso evita transformar foto
+    # de perfil, logo de empresa ou capa de link externo em mídia baixável.
+    if not (image_host == "licdn.com" or image_host.endswith(".licdn.com")):
+        return None
+    if "feedshare" not in image_path:
+        return None
+
+    title = meta_value("og:title", "twitter:title") or "Imagem do LinkedIn"
+    extension = "png" if image_path.endswith(".png") else "webp" if image_path.endswith(".webp") else "jpg"
+
+    item = {
+        "status": "ready",
+        "source": "linkedin",
+        "type": "image",
+        "url": image_url,
+        "title": title,
+        "thumbnail": image_url,
+        "filename": f"{safe_filename(title)}.{extension}",
+        "media_count": 1,
+        "http_headers": headers,
+    }
+    item["items"] = [dict(item)]
+    return item
+
 
 def _x_status_id(source_url):
     parsed = urlparse(source_url)
