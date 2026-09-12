@@ -107,6 +107,7 @@ def default_proxy_headers(source):
         "facebook": "https://www.facebook.com/",
         "youtube": "https://www.youtube.com/",
         "twitter": "https://x.com/",
+        "threads": "https://www.threads.com/",
         "pinterest": "https://www.pinterest.com/",
         "reddit": "https://www.reddit.com/",
         "kwai": "https://www.kwai.com/",
@@ -266,7 +267,7 @@ def prepare_media_response(media, source_url):
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "vimeo", "dailymotion", "soundcloud") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "threads", "pinterest", "reddit", "kwai", "vimeo", "dailymotion", "soundcloud") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -300,7 +301,7 @@ def prepare_media_response(media, source_url):
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "vimeo", "dailymotion", "soundcloud") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "threads", "pinterest", "reddit", "kwai", "vimeo", "dailymotion", "soundcloud") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -511,13 +512,14 @@ def extract_media(source_url):
     if parsed.scheme not in ("http", "https") or not any(
         host == item or host.endswith("." + item) for item in ALLOWED_HOSTS
     ):
-        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai, Vimeo, Dailymotion ou SoundCloud."
+        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Threads, Pinterest, Reddit, Kwai, Vimeo, Dailymotion ou SoundCloud."
 
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
     is_instagram = "instagram" in host
     is_facebook = "facebook" in host or host == "fb.watch"
     is_twitter = host == "x.com" or host.endswith(".x.com") or "twitter.com" in host
+    is_threads = host == "threads.com" or host.endswith(".threads.com") or host == "threads.net" or host.endswith(".threads.net")
     is_pinterest = host == "pin.it" or host == "pinterest.com" or host.endswith(".pinterest.com")
     is_reddit = host == "redd.it" or host == "reddit.com" or host.endswith(".reddit.com")
     is_kwai = (
@@ -556,6 +558,17 @@ def extract_media(source_url):
                 return reddit_media, None
         except Exception as error:
             print(f"Falha no extrator público do Reddit: {type(error).__name__}: {error}")
+
+    # Threads entrega a publicação completa para crawlers de link-preview.
+    # Usamos esse HTML público para foto, vídeo e carrossel, sem login/cookies.
+    if is_threads:
+        try:
+            threads_media = extract_threads_public_media(source_url)
+            if threads_media:
+                return threads_media, None
+        except Exception as error:
+            print(f"Falha no extrator público do Threads: {type(error).__name__}: {error}")
+        return None, "Não foi possível ler esta publicação do Threads agora. Confirme se ela é pública e tente novamente."
 
     # Pinterest não possui extrator dedicado no yt-dlp. Para Pins públicos,
     # lemos os dados SSR/GraphQL que a própria página envia ao navegador.
@@ -1970,6 +1983,217 @@ def extract_x_syndication(source_url):
     primary["media_count"] = len(items)
     return primary
 
+
+
+
+def _threads_meta_value(page, *properties):
+    from html import unescape as html_unescape
+    for prop in properties:
+        escaped = re.escape(prop)
+        patterns = (
+            rf'<meta[^>]+(?:property|name)=["\']{escaped}["\'][^>]+content=["\']([^"\']+)["\']',
+            rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']{escaped}["\']',
+        )
+        for pattern in patterns:
+            match = re.search(pattern, page, re.IGNORECASE)
+            if match:
+                return html_unescape(match.group(1)).strip()
+    return None
+
+
+def _threads_post_code(source_url):
+    parsed = urlparse(source_url)
+    parts = [part for part in parsed.path.split('/') if part]
+    for index, part in enumerate(parts[:-1]):
+        if part.lower() in ('post', 't'):
+            value = parts[index + 1]
+            if re.fullmatch(r'[A-Za-z0-9_-]+', value):
+                return value
+    return None
+
+
+def _threads_collect_posts(node, out):
+    media_keys = {'video_versions', 'video_dash_manifest', 'image_versions2', 'carousel_media'}
+    if isinstance(node, dict):
+        if node.get('code') and media_keys.intersection(node.keys()):
+            out.append(node)
+        for value in node.values():
+            _threads_collect_posts(value, out)
+    elif isinstance(node, list):
+        for value in node:
+            _threads_collect_posts(value, out)
+
+
+def _threads_image_candidate(media):
+    image_data = media.get('image_versions2') if isinstance(media, dict) else None
+    candidates = image_data.get('candidates') if isinstance(image_data, dict) else None
+    best = None
+    best_score = -1
+    for candidate in candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        url = candidate.get('url')
+        if not isinstance(url, str) or not url.startswith('https://'):
+            continue
+        width = int(candidate.get('width') or 0)
+        height = int(candidate.get('height') or 0)
+        score = width * height
+        if score > best_score:
+            best = url
+            best_score = score
+    return best
+
+
+def _threads_video_score(version):
+    if not isinstance(version, dict):
+        return -1
+    width = int(version.get('width') or 0)
+    height = int(version.get('height') or 0)
+    bitrate = 0
+    url = version.get('url')
+    if isinstance(url, str):
+        try:
+            import base64
+            encoded = parse_qs(urlparse(url).query).get('efg', [''])[0]
+            if encoded:
+                payload = json.loads(base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4)))
+                bitrate = int(payload.get('bitrate') or 0)
+                tag = str(payload.get('vencode_tag') or '')
+                widths = [int(value) for value in re.findall(r'(?<!\d)(\d{3,4})(?!\d)', tag)]
+                if widths and not width:
+                    width = max(widths)
+        except Exception:
+            pass
+    type_score = int(version.get('type') or 0) if str(version.get('type') or '').isdigit() else 0
+    return width * height, width, bitrate, type_score
+
+
+def _threads_video_candidate(media):
+    versions = media.get('video_versions') if isinstance(media, dict) else None
+    candidates = []
+    seen = set()
+    for version in versions or []:
+        if not isinstance(version, dict):
+            continue
+        url = version.get('url')
+        if not isinstance(url, str) or not url.startswith('https://'):
+            continue
+        path = url.split('?', 1)[0]
+        if path in seen:
+            continue
+        seen.add(path)
+        candidates.append((_threads_video_score(version), url))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
+def _threads_make_item(media, post_code, index, title):
+    if not isinstance(media, dict):
+        return None
+    thumbnail = _threads_image_candidate(media)
+    video_url = _threads_video_candidate(media)
+    headers = {
+        'User-Agent': 'Mozilla/5.0',
+        'Referer': 'https://www.threads.com/',
+    }
+    if video_url:
+        return {
+            'status': 'ready', 'source': 'threads', 'type': 'video',
+            'url': video_url, 'title': title, 'thumbnail': thumbnail,
+            'filename': f'threads-{post_code}-{index}.mp4', 'media_count': 1,
+            'http_headers': headers,
+        }
+    if thumbnail:
+        parsed = urlparse(thumbnail)
+        ext = Path(parsed.path).suffix.lower().lstrip('.')
+        if ext not in ('jpg', 'jpeg', 'png', 'webp'):
+            ext = 'jpg'
+        return {
+            'status': 'ready', 'source': 'threads', 'type': 'image',
+            'url': thumbnail, 'title': title, 'thumbnail': thumbnail,
+            'filename': f'threads-{post_code}-{index}.{ext}', 'media_count': 1,
+            'http_headers': headers,
+        }
+    return None
+
+
+def extract_threads_public_media(source_url):
+    """Extrai foto, vídeo ou carrossel de uma publicação pública do Threads.
+
+    O HTML comum do Threads pode cair na tela de login, mas a versão servida
+    para crawlers de link-preview contém os dados estruturados da publicação.
+    Para links /share/, o og:url revela o shortcode canônico do post.
+    """
+    from html import unescape as html_unescape
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+    }
+    request = Request(source_url, headers=headers)
+    with urlopen(request, timeout=25) as response:
+        page = response.read().decode('utf-8', 'ignore')
+
+    canonical = _threads_meta_value(page, 'og:url') or source_url
+    target_code = _threads_post_code(canonical) or _threads_post_code(source_url)
+
+    posts = []
+    for block in re.findall(r'<script[^>]+type=["\']application/json["\'][^>]*>(.*?)</script>', page, re.IGNORECASE | re.DOTALL):
+        payload = None
+        for candidate in (block.strip(), html_unescape(block.strip())):
+            if not candidate:
+                continue
+            try:
+                payload = json.loads(candidate)
+                break
+            except Exception:
+                continue
+        if payload is not None:
+            _threads_collect_posts(payload, posts)
+
+    if target_code:
+        post = next((item for item in posts if str(item.get('code') or '') == target_code), None)
+        if post is None:
+            return None
+    else:
+        # Sem um shortcode confiável, só aceitamos quando existe exatamente um
+        # post com mídia na página. Isso evita baixar recomendação/reply errado.
+        unique = {str(item.get('code') or ''): item for item in posts if item.get('code')}
+        if len(unique) != 1:
+            return None
+        post = next(iter(unique.values()))
+        target_code = str(post.get('code') or 'post')
+
+    caption = ''
+    caption_node = post.get('caption')
+    if isinstance(caption_node, dict):
+        caption = str(caption_node.get('text') or '').strip()
+    user = post.get('user') if isinstance(post.get('user'), dict) else {}
+    username = str(user.get('username') or '').strip()
+    title = (caption.splitlines()[0][:90] if caption else '') or (
+        f'Publicação de @{username}' if username else 'Mídia do Threads'
+    )
+
+    media_nodes = post.get('carousel_media') if isinstance(post.get('carousel_media'), list) else None
+    if not media_nodes:
+        media_nodes = [post]
+
+    items = []
+    for index, media_node in enumerate(media_nodes, start=1):
+        item = _threads_make_item(media_node, target_code, index, title)
+        if item:
+            items.append(item)
+
+    if not items:
+        return None
+
+    primary = dict(items[0])
+    primary['items'] = items
+    primary['media_count'] = len(items)
+    return primary
 
 
 def _pinterest_pin_id(source_url):

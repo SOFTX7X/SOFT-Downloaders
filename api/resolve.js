@@ -46,6 +46,9 @@ function identifySource(url) {
   if (host === 'x.com' || host.endsWith('.x.com') || host === 'twitter.com' || host.endsWith('.twitter.com')) {
     return pending('twitter', 'Link público do X/Twitter identificado.');
   }
+  if (host === 'threads.com' || host.endsWith('.threads.com') || host === 'threads.net' || host.endsWith('.threads.net')) {
+    return pending('threads', 'Publicação pública do Threads identificada.');
+  }
   if (host === 'pin.it' || host === 'pinterest.com' || host.endsWith('.pinterest.com')) {
     return pending('pinterest', 'Pin público do Pinterest identificado.');
   }

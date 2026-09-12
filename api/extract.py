@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 from yt_dlp import YoutubeDL
 
 ALLOWED_HOSTS = (
-    "instagram.com", "tiktok.com", "youtube.com", "youtu.be", "facebook.com", "fb.watch", "x.com", "twitter.com", "pinterest.com", "pin.it", "reddit.com", "redd.it", "kwai.com", "kwai-video.com", "kw.ai", "vimeo.com", "dailymotion.com", "dai.ly", "soundcloud.com",
+    "instagram.com", "tiktok.com", "youtube.com", "youtu.be", "facebook.com", "fb.watch", "x.com", "twitter.com", "pinterest.com", "pin.it", "reddit.com", "redd.it", "kwai.com", "kwai-video.com", "kw.ai", "vimeo.com", "dailymotion.com", "dai.ly", "soundcloud.com", "threads.com", "threads.net",
 )
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif", "avif"}
 AUDIO_EXTENSIONS = {"mp3", "m4a", "wav", "ogg", "opus", "aac"}
@@ -24,7 +24,7 @@ class handler(BaseHTTPRequestHandler):
             parsed = urlparse(source_url)
             host = parsed.hostname.lower().removeprefix("www.") if parsed.hostname else ""
             if parsed.scheme not in ("http", "https") or not any(host == item or host.endswith("." + item) for item in ALLOWED_HOSTS):
-                return self.respond(400, {"error": "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai, Vimeo, Dailymotion ou SoundCloud."})
+                return self.respond(400, {"error": "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Threads, Pinterest, Reddit, Kwai, Vimeo, Dailymotion ou SoundCloud."})
 
             worker_url = os.environ.get("SOFT_WORKER_URL", "https://api.forgeaioficial.online").rstrip("/")
             worker_secret = os.environ.get("SOFT_WORKER_SECRET", "")
@@ -87,6 +87,8 @@ def detect_source(host):
         return "youtube"
     if host == "x.com" or host.endswith(".x.com") or "twitter.com" in host:
         return "twitter"
+    if host == "threads.com" or host.endswith(".threads.com") or host == "threads.net" or host.endswith(".threads.net"):
+        return "threads"
     if host == "pin.it" or host == "pinterest.com" or host.endswith(".pinterest.com"):
         return "pinterest"
     if host == "redd.it" or host == "reddit.com" or host.endswith(".reddit.com"):
