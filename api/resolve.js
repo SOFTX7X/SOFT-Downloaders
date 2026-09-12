@@ -9,7 +9,6 @@ const DIRECT_EXTENSIONS = {
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Use POST.' });
-
   const rawUrl = String(req.body?.url || '').trim();
   let url;
   try { url = new URL(rawUrl); } catch { return res.status(400).json({ error: 'Cole um link válido.' }); }
@@ -20,11 +19,9 @@ module.exports = async (req, res) => {
   try { await assertPublicHost(url.hostname); } catch {
     return res.status(400).json({ error: 'Este endereço não pode ser analisado.' });
   }
-
   const source = identifySource(url);
   return res.status(200).json(source);
 };
-
 function identifySource(url) {
   const host = url.hostname.toLowerCase().replace(/^www\./, '');
   const ext = url.pathname.split('.').pop().toLowerCase();
@@ -46,9 +43,6 @@ function identifySource(url) {
   if (host === 'x.com' || host.endsWith('.x.com') || host === 'twitter.com' || host.endsWith('.twitter.com')) {
     return pending('twitter', 'Link público do X/Twitter identificado.');
   }
-  if (host === 'threads.com' || host.endsWith('.threads.com') || host === 'threads.net' || host.endsWith('.threads.net')) {
-    return pending('threads', 'Publicação pública do Threads identificada.');
-  }
   if (host === 'pin.it' || host === 'pinterest.com' || host.endsWith('.pinterest.com')) {
     return pending('pinterest', 'Pin público do Pinterest identificado.');
   }
@@ -62,9 +56,6 @@ function identifySource(url) {
   ) {
     return pending('kwai', 'Publicação pública do Kwai identificada.');
   }
-  if (host === 'vimeo.com' || host.endsWith('.vimeo.com')) {
-    return pending('vimeo', 'Vídeo público do Vimeo identificado.');
-  }
   if (host === 'dailymotion.com' || host.endsWith('.dailymotion.com') || host === 'dai.ly') {
     return pending('dailymotion', 'Vídeo público do Dailymotion identificado.');
   }
@@ -73,7 +64,6 @@ function identifySource(url) {
   }
   return { status: 'unsupported', source: 'other', message: 'Este link não parece ser uma mídia direta nem uma plataforma compatível.' };
 }
-
 function pending(source, message) { return { status: 'pending', source, message }; }
 
 async function assertPublicHost(hostname) {
@@ -81,7 +71,6 @@ async function assertPublicHost(hostname) {
   const addresses = await dns.lookup(hostname, { all: true });
   if (!addresses.length || addresses.some(({ address }) => isPrivateAddress(address))) throw new Error('private address');
 }
-
 function isPrivateAddress(address) {
   if (net.isIP(address) === 4) {
     const [a, b] = address.split('.').map(Number);
