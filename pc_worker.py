@@ -111,6 +111,7 @@ def default_proxy_headers(source):
         "reddit": "https://www.reddit.com/",
         "kwai": "https://www.kwai.com/",
         "vimeo": "https://vimeo.com/",
+        "dailymotion": "https://www.dailymotion.com/",
     }
     return {
         "User-Agent": "Mozilla/5.0",
@@ -139,6 +140,7 @@ def cache_media(
     tiktok_cookiefile=None,
     youtube_info=None,
     vimeo_info=None,
+    dailymotion_info=None,
     instagram_info=None,
     facebook_info=None,
     item_index=None,
@@ -152,6 +154,7 @@ def cache_media(
         tiktok_info if source == "tiktok" else
         youtube_info if source == "youtube" else
         vimeo_info if source == "vimeo" else
+        dailymotion_info if source == "dailymotion" else
         instagram_info if source == "instagram" else
         facebook_info if source == "facebook" else
         None
@@ -238,11 +241,13 @@ def prepare_media_response(media, source_url):
     tiktok_cookiefile = media.pop("_tiktok_cookiefile", None)
     youtube_info = media.pop("_youtube_info", None)
     vimeo_info = media.pop("_vimeo_info", None)
+    dailymotion_info = media.pop("_dailymotion_info", None)
     facebook_info = media.pop("_facebook_info", None)
     items = media.get("items") if isinstance(media.get("items"), list) else []
     tiktok_cache_used = False
     youtube_cache_used = False
     vimeo_cache_used = False
+    dailymotion_cache_used = False
 
     for item_index, item in enumerate(items, start=1):
         if not item or not item.get("url"):
@@ -251,6 +256,7 @@ def prepare_media_response(media, source_url):
         use_tiktok_bundle = item_source == "tiktok" and not tiktok_cache_used
         use_youtube_bundle = item_source == "youtube" and not youtube_cache_used
         use_vimeo_bundle = item_source == "vimeo" and not vimeo_cache_used
+        use_dailymotion_bundle = item_source == "dailymotion" and not dailymotion_cache_used
         instagram_info = item.pop("_instagram_info", None) if item_source == "instagram" else None
         instagram_index = item.pop("_instagram_index", item_index) if item_source == "instagram" else None
         item_facebook_info = item.pop("_facebook_info", None) if item_source == "facebook" else None
@@ -259,12 +265,13 @@ def prepare_media_response(media, source_url):
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "vimeo") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "vimeo", "dailymotion") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
             youtube_info=youtube_info if use_youtube_bundle else None,
             vimeo_info=vimeo_info if use_vimeo_bundle else None,
+            dailymotion_info=dailymotion_info if use_dailymotion_bundle else None,
             instagram_info=instagram_info,
             facebook_info=item_facebook_info,
             item_index=facebook_index if item_source == "facebook" else instagram_index,
@@ -276,6 +283,8 @@ def prepare_media_response(media, source_url):
             youtube_cache_used = True
         if use_vimeo_bundle:
             vimeo_cache_used = True
+        if use_dailymotion_bundle:
+            dailymotion_cache_used = True
         item.pop("http_headers", None)
 
     if items and media.get("url") == items[0].get("url"):
@@ -285,16 +294,18 @@ def prepare_media_response(media, source_url):
         use_tiktok_bundle = media_source == "tiktok" and not tiktok_cache_used
         use_youtube_bundle = media_source == "youtube" and not youtube_cache_used
         use_vimeo_bundle = media_source == "vimeo" and not vimeo_cache_used
+        use_dailymotion_bundle = media_source == "dailymotion" and not dailymotion_cache_used
         media["proxy_id"] = cache_media(
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "vimeo") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "vimeo", "dailymotion") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
             youtube_info=youtube_info if use_youtube_bundle else None,
             vimeo_info=vimeo_info if use_vimeo_bundle else None,
+            dailymotion_info=dailymotion_info if use_dailymotion_bundle else None,
             instagram_info=media.pop("_instagram_info", None) if media_source == "instagram" else None,
             facebook_info=media.pop("_facebook_info", facebook_info) if media_source == "facebook" else None,
             item_index=(
@@ -310,6 +321,8 @@ def prepare_media_response(media, source_url):
             youtube_cache_used = True
         if use_vimeo_bundle:
             vimeo_cache_used = True
+        if use_dailymotion_bundle:
+            dailymotion_cache_used = True
 
     # Se por algum motivo o TikTok não gerou cache, não deixe cookie temporário órfão.
     if tiktok_cookiefile and not tiktok_cache_used:
@@ -403,7 +416,7 @@ def extract_media(source_url):
     if parsed.scheme not in ("http", "https") or not any(
         host == item or host.endswith("." + item) for item in ALLOWED_HOSTS
     ):
-        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai ou Vimeo."
+        return None, "Use um link público de Instagram, TikTok, YouTube, Facebook, X/Twitter, Pinterest, Reddit, Kwai, Vimeo ou Dailymotion."
 
     is_tiktok = "tiktok" in host
     is_youtube = "youtube" in host or host == "youtu.be"
@@ -418,10 +431,12 @@ def extract_media(source_url):
         or host == "kw.ai" or host.endswith(".kw.ai")
     )
     is_vimeo = host == "vimeo.com" or host.endswith(".vimeo.com")
+    is_dailymotion = host == "dailymotion.com" or host.endswith(".dailymotion.com") or host == "dai.ly"
     tiktok_cookiefile = None
     tiktok_info = None
     youtube_info = None
     vimeo_info = None
+    dailymotion_info = None
     facebook_info = None
 
     # Kwai usa links curtos com redirecionamento e expõe a mídia pública
@@ -492,6 +507,8 @@ def extract_media(source_url):
                     youtube_info = extractor.sanitize_info(info)
                 if is_vimeo and info:
                     vimeo_info = extractor.sanitize_info(info)
+                if is_dailymotion and info:
+                    dailymotion_info = extractor.sanitize_info(info)
                 instagram_info = extractor.sanitize_info(info) if is_instagram and info else None
                 facebook_info = extractor.sanitize_info(info) if is_facebook and info else None
             media = normalize_carousel_media(
@@ -502,6 +519,8 @@ def extract_media(source_url):
                 print(f"Falha na análise do YouTube: {type(error).__name__}: {error}")
             elif is_vimeo:
                 print(f"Falha na análise do Vimeo: {type(error).__name__}: {error}")
+            elif is_dailymotion:
+                print(f"Falha na análise do Dailymotion: {type(error).__name__}: {error}")
             media = None
 
     # Fallback para publicação de foto única, quando o Instagram não retorna
@@ -549,6 +568,8 @@ def extract_media(source_url):
         media["_youtube_info"] = youtube_info
     if is_vimeo:
         media["_vimeo_info"] = vimeo_info
+    if is_dailymotion:
+        media["_dailymotion_info"] = dailymotion_info
     if is_facebook and facebook_info:
         media["_facebook_info"] = facebook_info
     return media, None
@@ -672,6 +693,63 @@ def normalize_vimeo_media(info, host):
         "title": title,
         "thumbnail": entry.get("thumbnail") or info.get("thumbnail"),
         "filename": f"vimeo-{video_id}.mp4",
+        "media_count": 1,
+        "http_headers": headers,
+    }
+
+
+def normalize_dailymotion_media(info, host):
+    """Normaliza um vídeo público do Dailymotion.
+
+    O Dailymotion normalmente expõe HLS com H.264/AAC. A URL escolhida aqui
+    serve apenas como referência/cache; prévia e download final são preparados
+    pelo yt-dlp no worker para o navegador receber um MP4 compatível.
+    """
+    if not info:
+        return None
+
+    raw_items = info.get("entries") if info.get("entries") else [info]
+    entry = next((item for item in raw_items if item), None)
+    if not entry:
+        return None
+
+    candidates = []
+    for fmt in entry.get("formats") or []:
+        if not isinstance(fmt, dict):
+            continue
+        media_url = fmt.get("url")
+        if not isinstance(media_url, str) or not media_url.startswith("https://"):
+            continue
+        vcodec = str(fmt.get("vcodec") or "none").lower()
+        if vcodec == "none":
+            continue
+        height = fmt.get("height") or 0
+        tbr = fmt.get("tbr") or 0
+        # Para a referência de prévia, priorizamos uma faixa até 480p.
+        preferred = 1 if height and height <= 480 else 0
+        candidates.append(((preferred, height if preferred else -height, tbr), fmt))
+
+    if candidates:
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        selected = candidates[0][1]
+        media_url = selected.get("url")
+        headers = selected.get("http_headers") or entry.get("http_headers") or {}
+    else:
+        media_url = entry.get("url")
+        if not isinstance(media_url, str) or not media_url.startswith("https://"):
+            return None
+        headers = entry.get("http_headers") or {}
+
+    title = entry.get("title") or info.get("title") or "Vídeo do Dailymotion"
+    video_id = entry.get("id") or info.get("id") or "video"
+    return {
+        "status": "ready",
+        "source": "dailymotion",
+        "type": "video",
+        "url": media_url,
+        "title": title,
+        "thumbnail": entry.get("thumbnail") or info.get("thumbnail"),
+        "filename": f"dailymotion-{video_id}.mp4",
         "media_count": 1,
         "http_headers": headers,
     }
@@ -2268,6 +2346,15 @@ def normalize_carousel_media(info, host, sanitized_info=None):
         primary["media_count"] = 1
         return primary
 
+    if host == "dailymotion.com" or host.endswith(".dailymotion.com") or host == "dai.ly":
+        item = normalize_dailymotion_media(info, host)
+        if not item:
+            return None
+        primary = dict(item)
+        primary["items"] = [item]
+        primary["media_count"] = 1
+        return primary
+
     raw_items = info.get("entries") if info.get("entries") else [info]
     safe_items = []
     if sanitized_info:
@@ -2396,6 +2483,9 @@ class WorkerHandler(BaseHTTPRequestHandler):
 
         if source == "vimeo" and cached and download_requested:
             return self.proxy_vimeo_with_ytdlp(cached)
+
+        if source == "dailymotion" and cached:
+            return self.proxy_dailymotion_with_ytdlp(cached, download_requested)
 
         # A prévia do Instagram continua usando a URL direta para ser rápida.
         # No download final de vídeo, usamos o yt-dlp + FFmpeg para preferir um
@@ -2807,6 +2897,88 @@ class WorkerHandler(BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def proxy_dailymotion_with_ytdlp(self, cached, download_requested=False):
+        page_url = cached.get("page_url") or cached.get("url")
+        info_path = cached.get("info_path")
+        filename = cached.get("filename") or "dailymotion-video.mp4"
+        filename = str(Path(filename).with_suffix(".mp4"))
+
+        if not page_url and not (info_path and Path(info_path).is_file()):
+            return self.respond(410, {"error": "Este link expirou. Analise o vídeo novamente."})
+
+        # A prévia usa somente um trecho curto e leve. Dailymotion costuma
+        # fornecer HLS; preparar alguns segundos em MP4 evita depender de
+        # suporte HLS nativo do Chrome/Android WebView.
+        preview_selector = "best[height<=480]/worst"
+        download_selector = "best[height<=720]/best"
+
+        with tempfile.TemporaryDirectory(prefix="soft-dailymotion-") as temp_dir:
+            output_template = str(Path(temp_dir) / "download.%(ext)s")
+
+            def run_download(use_info_json):
+                command = [
+                    sys.executable, "-m", "yt_dlp",
+                    "--quiet", "--no-warnings", "--no-progress", "--no-playlist",
+                    "-f", download_selector if download_requested else preview_selector,
+                    "--merge-output-format", "mp4",
+                    "--remux-video", "mp4",
+                    "-o", output_template,
+                ]
+                if not download_requested:
+                    command.extend(["--download-sections", "*0-12"])
+                if use_info_json and info_path and Path(info_path).is_file():
+                    command.extend(["--load-info-json", info_path])
+                elif page_url:
+                    command.append(page_url)
+                else:
+                    return None
+                return subprocess.run(
+                    command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+                )
+
+            result = run_download(True)
+            if result is None or result.returncode != 0:
+                detail = (result.stderr if result else "").strip()
+                if detail:
+                    print(f"Falha no {'download' if download_requested else 'preview'} Dailymotion via info-json: {detail[-1600:]}")
+                result = run_download(False)
+
+            if result is None or result.returncode != 0:
+                detail = (result.stderr if result else "").strip()
+                print(f"Falha no {'download' if download_requested else 'preview'} Dailymotion via yt-dlp: {detail[-1600:]}")
+                return self.respond(502, {
+                    "error": "Não foi possível preparar este vídeo do Dailymotion."
+                })
+
+            files = [
+                path for path in Path(temp_dir).iterdir()
+                if path.is_file() and path.suffix.lower() in (".mp4", ".m4v", ".mov", ".webm")
+            ]
+            if not files:
+                files = [path for path in Path(temp_dir).iterdir() if path.is_file()]
+            if not files:
+                return self.respond(502, {"error": "Não foi possível preparar este vídeo do Dailymotion."})
+
+            media_file = max(files, key=lambda path: path.stat().st_size)
+            if download_requested:
+                return self.send_local_download(media_file, filename, "video/mp4")
+
+            self.send_response(200)
+            origin = self.headers.get("Origin")
+            if origin in ALLOWED_ORIGINS:
+                self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(media_file.stat().st_size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            try:
+                with media_file.open("rb") as stream:
+                    while chunk := stream.read(64 * 1024):
+                        self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def proxy_vimeo_with_ytdlp(self, cached):
         page_url = cached.get("page_url") or cached.get("url")
