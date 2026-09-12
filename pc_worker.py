@@ -915,12 +915,17 @@ def normalize_soundcloud_media(info, host):
     display_title = f"{artist} - {track_title}" if artist and artist.lower() not in track_title.lower() else track_title
     headers = (selected or {}).get("http_headers") or entry.get("http_headers") or info.get("http_headers") or {}
 
+    duration = entry.get("duration") or info.get("duration")
+
     return {
         "status": "ready",
         "source": "soundcloud",
         "type": "audio",
         "url": media_url,
         "title": display_title,
+        "track_title": track_title,
+        "artist": artist,
+        "duration": duration,
         "thumbnail": entry.get("thumbnail") or info.get("thumbnail"),
         "filename": f"{safe_filename(display_title)}.{extension}",
         "media_count": 1,

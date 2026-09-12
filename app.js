@@ -190,14 +190,151 @@ function showResultError(message) {
   resultErrorText.textContent = message;
 }
 
+function formatAudioTime(seconds) {
+  const value = Number.isFinite(Number(seconds)) ? Math.max(0, Number(seconds)) : 0;
+  const minutes = Math.floor(value / 60);
+  const secs = Math.floor(value % 60);
+  return `${minutes}:${String(secs).padStart(2, '0')}`;
+}
+
+function createAudioPreview(data) {
+  const card = document.createElement('article');
+  card.className = 'audio-preview-card';
+
+  const cover = document.createElement('div');
+  cover.className = 'audio-cover';
+
+  if (data.thumbnail) {
+    const image = document.createElement('img');
+    image.src = data.thumbnail;
+    image.alt = '';
+    image.addEventListener('error', () => {
+      image.remove();
+      cover.classList.add('is-fallback');
+      cover.setAttribute('aria-label', 'Capa indisponível');
+    });
+    cover.append(image);
+  } else {
+    cover.classList.add('is-fallback');
+    cover.setAttribute('aria-label', 'Capa indisponível');
+  }
+
+  const details = document.createElement('div');
+  details.className = 'audio-details';
+
+  const title = document.createElement('strong');
+  title.className = 'audio-title';
+  title.textContent = data.track_title || data.title || 'Áudio';
+
+  const artist = document.createElement('span');
+  artist.className = 'audio-artist';
+  artist.textContent = data.artist || (data.source === 'soundcloud' ? 'SoundCloud' : 'Áudio');
+
+  const player = document.createElement('div');
+  player.className = 'audio-player';
+
+  const playButton = document.createElement('button');
+  playButton.type = 'button';
+  playButton.className = 'audio-play';
+  playButton.setAttribute('aria-label', 'Reproduzir áudio');
+  playButton.textContent = '▶';
+
+  const timeline = document.createElement('div');
+  timeline.className = 'audio-timeline';
+
+  const progress = document.createElement('input');
+  progress.className = 'audio-progress';
+  progress.type = 'range';
+  progress.min = '0';
+  progress.max = '1000';
+  progress.value = '0';
+  progress.step = '1';
+  progress.setAttribute('aria-label', 'Progresso do áudio');
+
+  const timeRow = document.createElement('div');
+  timeRow.className = 'audio-time-row';
+  const currentTime = document.createElement('span');
+  currentTime.textContent = '0:00';
+  const durationTime = document.createElement('span');
+  durationTime.textContent = data.duration ? formatAudioTime(data.duration) : '--:--';
+  timeRow.append(currentTime, durationTime);
+  timeline.append(progress, timeRow);
+  player.append(playButton, timeline);
+  details.append(title, artist, player);
+
+  const audio = document.createElement('audio');
+  audio.src = proxyMediaUrl(data.url, data.source, data.proxy_id, false);
+  audio.preload = 'metadata';
+  audio.className = 'audio-engine';
+  audio.setAttribute('aria-hidden', 'true');
+
+  const syncPlayer = () => {
+    const duration = Number.isFinite(audio.duration) && audio.duration > 0
+      ? audio.duration
+      : Number(data.duration || 0);
+    if (duration > 0) {
+      const ratio = Math.min(1, Math.max(0, audio.currentTime / duration));
+      progress.value = String(Math.round(ratio * 1000));
+      durationTime.textContent = formatAudioTime(duration);
+    }
+    currentTime.textContent = formatAudioTime(audio.currentTime);
+  };
+
+  playButton.addEventListener('click', async () => {
+    if (audio.paused) {
+      try {
+        await audio.play();
+      } catch (_) {
+        return;
+      }
+    } else {
+      audio.pause();
+    }
+  });
+
+  progress.addEventListener('input', () => {
+    const duration = Number.isFinite(audio.duration) && audio.duration > 0
+      ? audio.duration
+      : Number(data.duration || 0);
+    if (duration > 0) {
+      audio.currentTime = (Number(progress.value) / 1000) * duration;
+      syncPlayer();
+    }
+  });
+
+  audio.addEventListener('play', () => {
+    playButton.textContent = '❚❚';
+    playButton.setAttribute('aria-label', 'Pausar áudio');
+  });
+  audio.addEventListener('pause', () => {
+    playButton.textContent = '▶';
+    playButton.setAttribute('aria-label', 'Reproduzir áudio');
+  });
+  audio.addEventListener('ended', () => {
+    playButton.textContent = '▶';
+    progress.value = '0';
+    currentTime.textContent = '0:00';
+  });
+  audio.addEventListener('loadedmetadata', syncPlayer);
+  audio.addEventListener('durationchange', syncPlayer);
+  audio.addEventListener('timeupdate', syncPlayer);
+  audio.addEventListener('error', () => {
+    playButton.disabled = true;
+    playButton.textContent = '▶';
+    artist.textContent = 'Prévia de áudio indisponível';
+  });
+
+  card.append(cover, details, audio);
+  return card;
+}
+
 function createPreview(data) {
   // Todo item identificado como vídeo usa a mesma prévia inline: autoplay,
   // sem controles, silenciosa e em loop. A thumbnail fica somente como
   // poster/fallback enquanto o vídeo carrega ou se a prévia falhar.
-  const element = document.createElement(
-    data.type === 'image' ? 'img' : data.type === 'video' ? 'video' : 'audio'
-  );
+  if (data.type === 'audio') return createAudioPreview(data);
 
+  const element = document.createElement(data.type === 'image' ? 'img' : 'video');
   element.src = proxyMediaUrl(data.url, data.source, data.proxy_id, false);
 
   if (data.type === 'image') {
@@ -219,10 +356,6 @@ function createPreview(data) {
     element.addEventListener('canplay', () => {
       element.play().catch(() => {});
     }, { once: true });
-  } else if (data.type === 'audio') {
-    element.controls = true;
-    element.preload = 'metadata';
-    element.addEventListener('error', () => showPreviewFallback(data, element));
   }
 
   return element;
