@@ -26,6 +26,7 @@
         <div class="tool-tabs" role="tablist" aria-label="Ferramentas do SOFT Downloaders">
           <button class="tool-tab is-active" id="mediaTab" type="button" role="tab" aria-selected="true" aria-controls="mediaToolPanel">Baixar mídia</button>
           <button class="tool-tab" id="mp3Tab" type="button" role="tab" aria-selected="false" aria-controls="mp3ToolPanel">Vídeo para MP3</button>
+          <button class="tool-tab" id="thumbnailTab" type="button" role="tab" aria-selected="false" aria-controls="thumbnailToolPanel">Baixar Thumbnail</button>
         </div>
 
         <div class="tool-panel" id="mediaToolPanel" role="tabpanel" aria-labelledby="mediaTab">
@@ -65,6 +66,25 @@
           </form>
           <p class="form-note" id="mp3FormNote">A conversão é feita somente quando você usa esta área.</p>
         </div>
+
+        <div class="tool-panel" id="thumbnailToolPanel" role="tabpanel" aria-labelledby="thumbnailTab" hidden>
+          <p class="eyebrow">THUMBNAIL DE VÍDEO</p>
+          <h1>Baixe a thumbnail.</h1>
+          <p class="hero-copy">Cole o link de um vídeo ou stream compatível para baixar a capa em alta qualidade.</p>
+
+          <div class="media-types" aria-label="Plataformas de thumbnail">
+            <span>YouTube</span><span>Twitch</span><span>Kick</span><span>Dailymotion</span>
+          </div>
+
+          <form class="download-form" id="thumbnailForm" novalidate>
+            <label class="sr-only" for="thumbnailUrl">Cole o link do vídeo ou stream</label>
+            <input id="thumbnailUrl" name="thumbnailUrl" type="url" inputmode="url" autocomplete="url" placeholder="Cole aqui o link do vídeo ou stream" required />
+            <button type="button" class="clear-button" id="thumbnailClearButton" aria-label="Limpar link" hidden>×</button>
+            <button type="button" class="paste-button" id="thumbnailPasteButton">Colar</button>
+            <button type="submit" class="download-button">Buscar capa</button>
+          </form>
+          <p class="form-note" id="thumbnailFormNote">Disponível para YouTube, Twitch, Kick e Dailymotion.</p>
+        </div>
       </section>
 
       <section class="steps" id="como-funciona" aria-labelledby="steps-title">
@@ -89,6 +109,7 @@
         <details><summary>Quais links posso usar?</summary><p>Links públicos das plataformas compatíveis e URLs diretas de mídia. Conteúdos privados, removidos ou restritos podem não estar disponíveis.</p></details>
         <details><summary>Preciso criar uma conta?</summary><p>Não. Basta colar um link público compatível, analisar a mídia e iniciar o download.</p></details>
         <details><summary>Como transformar um vídeo em MP3?</summary><p>Abra a opção Vídeo para MP3, cole o link público do vídeo e gere o arquivo de áudio.</p></details>
+        <details><summary>Como baixar uma thumbnail?</summary><p>Abra Baixar Thumbnail e cole um link do YouTube, Twitch, Kick ou Dailymotion. Se a capa estiver disponível, ela será exibida para download.</p></details>
       </section>
     </main>
 

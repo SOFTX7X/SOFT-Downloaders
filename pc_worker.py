@@ -154,6 +154,7 @@ def cache_media(
     twitch_info=None,
     item_index=None,
     media_type=None,
+    thumbnail=None,
 ):
     now = time.monotonic()
     token = secrets.token_urlsafe(24)
@@ -190,6 +191,7 @@ def cache_media(
         "cookiefile": tiktok_cookiefile if source == "tiktok" else None,
         "item_index": item_index,
         "media_type": media_type,
+        "thumbnail": thumbnail,
         "expires": now + MEDIA_CACHE_TTL,
     }
     with MEDIA_CACHE_LOCK:
@@ -290,6 +292,7 @@ def prepare_media_response(media, source_url):
             twitch_info=twitch_info if use_twitch_bundle else None,
             item_index=facebook_index if item_source == "facebook" else instagram_index,
             media_type=item.get("type"),
+            thumbnail=item.get("thumbnail"),
         )
         if use_tiktok_bundle:
             tiktok_cache_used = True
@@ -332,6 +335,7 @@ def prepare_media_response(media, source_url):
                 None
             ),
             media_type=media.get("type"),
+            thumbnail=media.get("thumbnail"),
         )
         if use_tiktok_bundle:
             tiktok_cache_used = True
@@ -769,6 +773,34 @@ def extract_media(source_url):
         media["_twitch_info"] = twitch_info
     return media, None
 
+def best_thumbnail_url(*payloads):
+    """Escolhe a maior thumbnail HTTPS disponível no retorno do extrator."""
+    candidates = []
+    seen = set()
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        direct = payload.get("thumbnail")
+        if isinstance(direct, str) and direct.startswith("https://") and direct not in seen:
+            seen.add(direct)
+            candidates.append(((0, 0, 0), direct))
+        for thumb in payload.get("thumbnails") or []:
+            if not isinstance(thumb, dict):
+                continue
+            url = thumb.get("url")
+            if not isinstance(url, str) or not url.startswith("https://") or url in seen:
+                continue
+            seen.add(url)
+            width = int(thumb.get("width") or 0)
+            height = int(thumb.get("height") or 0)
+            preference = int(thumb.get("preference") or 0)
+            candidates.append(((width * height, preference, width), url))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return candidates[0][1]
+
+
 def normalize_youtube_media(info, host):
     """YouTube sempre representa vídeo; thumbnail é apenas a capa.
 
@@ -813,7 +845,7 @@ def normalize_youtube_media(info, host):
             "type": "video",
             "url": page_url,
             "title": title,
-            "thumbnail": entry.get("thumbnail") or info.get("thumbnail"),
+            "thumbnail": best_thumbnail_url(entry, info),
             "filename": f"{safe_filename(title)}.mp4",
             "media_count": 1,
             "http_headers": entry.get("http_headers") or info.get("http_headers") or {},
@@ -943,7 +975,7 @@ def normalize_dailymotion_media(info, host):
         "type": "video",
         "url": media_url,
         "title": title,
-        "thumbnail": entry.get("thumbnail") or info.get("thumbnail"),
+        "thumbnail": best_thumbnail_url(entry, info),
         "filename": f"dailymotion-{video_id}.mp4",
         "media_count": 1,
         "http_headers": headers,
@@ -3064,7 +3096,7 @@ def normalize_carousel_media(info, host, sanitized_info=None):
         item = {
             "status": "ready", "source": "twitch", "type": "video",
             "url": page_url, "title": title,
-            "thumbnail": entry.get("thumbnail") or info.get("thumbnail"),
+            "thumbnail": best_thumbnail_url(entry, info),
             "filename": f"twitch-{video_id}.mp4", "media_count": 1,
             "http_headers": entry.get("http_headers") or info.get("http_headers") or {},
         }
@@ -3089,7 +3121,7 @@ def normalize_carousel_media(info, host, sanitized_info=None):
         item = {
             "status": "ready", "source": "kick", "type": "video",
             "url": page_url, "title": title,
-            "thumbnail": entry.get("thumbnail") or info.get("thumbnail"),
+            "thumbnail": best_thumbnail_url(entry, info),
             "filename": f"kick-{clip_id}.mp4", "media_count": 1,
             "http_headers": entry.get("http_headers") or info.get("http_headers") or {},
         }
@@ -3184,6 +3216,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
         proxy_id = query.get("id", [""])[0]
         download_requested = query.get("dl", [""])[0] == "1"
         mp3_requested = query.get("mp3", [""])[0] == "1"
+        thumbnail_requested = query.get("thumb", [""])[0] == "1"
         cached = get_cached_media(proxy_id) if proxy_id else None
 
         if proxy_id:
@@ -3222,6 +3255,13 @@ class WorkerHandler(BaseHTTPRequestHandler):
             if not cached:
                 return self.respond(400, {"error": "Analise o vídeo novamente antes de gerar o MP3."})
             return self.proxy_media_as_mp3(cached, download_requested)
+
+        if thumbnail_requested:
+            if not cached:
+                return self.respond(400, {"error": "Analise o vídeo novamente antes de baixar a thumbnail."})
+            if source not in {"youtube", "twitch", "kick", "dailymotion"}:
+                return self.respond(400, {"error": "Thumbnail indisponível para esta plataforma."})
+            return self.proxy_thumbnail(cached, download_requested)
 
         # No TikTok, reutilizamos o info-json e os cookies gerados na própria
         # análise. Assim o download NÃO abre a página do TikTok uma segunda vez,
@@ -3360,6 +3400,51 @@ class WorkerHandler(BaseHTTPRequestHandler):
         except Exception as error:
             print(f"Falha no proxy {source or 'desconhecido'} via urllib: {type(error).__name__}: {error}")
             self.respond(502, {"error": "Não foi possível preparar este arquivo."})
+
+    def proxy_thumbnail(self, cached, download_requested=False):
+        thumbnail_url = str(cached.get("thumbnail") or "").strip()
+        parsed = urlparse(thumbnail_url)
+        if parsed.scheme != "https" or not parsed.hostname or not is_public_hostname(parsed.hostname):
+            return self.respond(422, {"error": "Thumbnail indisponível para este conteúdo."})
+
+        source = cached.get("source") or "video"
+        headers = default_proxy_headers(source)
+        headers.update(cached.get("headers") or {})
+        headers.pop("Range", None)
+
+        try:
+            with urlopen(Request(thumbnail_url, headers=headers), timeout=30) as upstream:
+                content_type = str(upstream.headers.get("Content-Type") or "image/jpeg").split(";", 1)[0].strip().lower()
+                if not content_type.startswith("image/"):
+                    return self.respond(422, {"error": "A capa recebida não é uma imagem válida."})
+
+                extension = {
+                    "image/jpeg": ".jpg",
+                    "image/jpg": ".jpg",
+                    "image/png": ".png",
+                    "image/webp": ".webp",
+                    "image/gif": ".gif",
+                }.get(content_type, ".jpg")
+                base = Path(cached.get("filename") or f"{source}-thumbnail").stem
+                filename = f"{base}-thumbnail{extension}"
+
+                self.send_response(getattr(upstream, "status", 200))
+                origin = self.headers.get("Origin")
+                if origin in ALLOWED_ORIGINS:
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Content-Type", content_type)
+                if upstream.headers.get("Content-Length"):
+                    self.send_header("Content-Length", upstream.headers["Content-Length"])
+                if download_requested:
+                    self.send_header("Content-Disposition", content_disposition(filename))
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                self.send_header("Cache-Control", "private, max-age=300")
+                self.end_headers()
+                while chunk := upstream.read(64 * 1024):
+                    self.wfile.write(chunk)
+        except Exception as error:
+            print(f"Falha ao preparar thumbnail de {source}: {type(error).__name__}: {error}")
+            return self.respond(502, {"error": "Não foi possível baixar esta thumbnail agora."})
 
     def resolve_mp3_stream(self, cached):
         """Resolve uma única faixa reproduzível para conversão em MP3.
