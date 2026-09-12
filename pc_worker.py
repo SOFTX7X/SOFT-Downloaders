@@ -410,6 +410,45 @@ def extract_tiktok_with_session(source_url):
     return None, None, None
 
 
+def extract_dailymotion_cli(source_url):
+    """Extrai Dailymotion pelo mesmo caminho CLI validado no runtime local.
+
+    O extrator do Dailymotion pode precisar refazer a leitura do HLS com
+    impersonação de navegador. O CLI do yt-dlp já executa esse fallback
+    automaticamente; usando o mesmo Python do worker mantemos exatamente o
+    comportamento que foi validado manualmente com `yt-dlp -F`.
+    """
+    command = [
+        sys.executable, "-m", "yt_dlp",
+        "--dump-single-json", "--skip-download",
+        "--no-warnings", "--no-playlist",
+        source_url,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=45,
+        )
+    except subprocess.TimeoutExpired:
+        print("Falha na análise do Dailymotion: tempo limite excedido")
+        return None
+
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip()
+        if detail:
+            print(f"Falha na análise do Dailymotion via CLI: {detail[-1600:]}")
+        return None
+
+    try:
+        return json.loads(result.stdout)
+    except Exception as error:
+        print(f"Falha ao interpretar Dailymotion: {type(error).__name__}: {error}")
+        return None
+
+
 def extract_media(source_url):
     parsed = urlparse(source_url)
     host = parsed.hostname.lower().removeprefix("www.") if parsed.hostname else ""
@@ -484,7 +523,15 @@ def extract_media(source_url):
         except Exception as error:
             print(f"Falha no syndication do X/Twitter: {type(error).__name__}: {error}")
 
-    if is_tiktok and curl_requests is not None:
+    if is_dailymotion:
+        # Usa o mesmo fluxo CLI que foi validado diretamente no runtime.
+        # O CLI consegue refazer a leitura do m3u8 com impersonação quando o
+        # Dailymotion rejeita a primeira tentativa, enquanto ignoreerrors da
+        # API Python podia apenas devolver None e terminar em 422 sem log.
+        info = extract_dailymotion_cli(source_url)
+        dailymotion_info = info
+        media = normalize_carousel_media(info, host) if info else None
+    elif is_tiktok and curl_requests is not None:
         info, tiktok_info, tiktok_cookiefile = extract_tiktok_fast(source_url)
         if not info:
             info, tiktok_info, tiktok_cookiefile = extract_tiktok_with_session(source_url)
@@ -2920,6 +2967,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
                 command = [
                     sys.executable, "-m", "yt_dlp",
                     "--quiet", "--no-warnings", "--no-progress", "--no-playlist",
+                    "--impersonate", "chrome",
                     "-f", download_selector if download_requested else preview_selector,
                     "--merge-output-format", "mp4",
                     "--remux-video", "mp4",
