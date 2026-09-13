@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import zipfile
+from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock, Semaphore, Thread
@@ -60,6 +61,8 @@ MUSIC_JOB_TTL = 2 * 60 * 60
 MUSIC_JOBS = {}
 MUSIC_JOBS_LOCK = Lock()
 MUSIC_JOB_SEMAPHORE = Semaphore(2)
+MUSIC_JOB_PROCESSES = {}
+MUSIC_JOB_PROCESSES_LOCK = Lock()
 RUNTIME_CACHE_DIR = Path(tempfile.gettempdir()) / "soft-downloaders-worker-cache"
 RUNTIME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 TIKTOK_SESSION_COOKIEFILE = RUNTIME_CACHE_DIR / "tiktok-session.cookies.txt"
@@ -3259,7 +3262,33 @@ def get_music_collection(token):
         item = MUSIC_COLLECTION_CACHE.get(token)
         return dict(item) if item else None
 
-def music_track_from_entry(entry, index):
+def music_track_source(entry, source):
+    entry = entry or {}
+    track_id = str(entry.get("id") or "").strip()
+
+    for key in ("webpage_url", "original_url"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            value = value.strip()
+            if value.startswith(("https://", "http://", "audius:")):
+                return value
+
+    if source == "youtube" and track_id:
+        return f"https://www.youtube.com/watch?v={track_id}"
+    if source == "audius" and track_id:
+        return f"audius:{track_id}"
+    if source == "bandlab" and track_id:
+        return f"https://www.bandlab.com/revision/{track_id}"
+
+    value = entry.get("url")
+    if isinstance(value, str) and value.strip():
+        value = value.strip()
+        if value.startswith(("https://", "http://", "audius:")):
+            return value
+    return ""
+
+
+def music_track_from_entry(entry, index, source):
     entry = entry or {}
     title = str(entry.get("track") or entry.get("title") or "").strip()
     if not title or title.upper() == "NA":
@@ -3273,13 +3302,20 @@ def music_track_from_entry(entry, index):
         duration = float(duration) if duration is not None else None
     except (TypeError, ValueError):
         duration = None
+    track_id = str(entry.get("id") or "").strip()
+    thumbnail = best_thumbnail_url(entry)
+    if not thumbnail and source == "youtube" and track_id:
+        thumbnail = f"https://i.ytimg.com/vi/{track_id}/hqdefault.jpg"
     return {
         "index": index,
-        "id": str(entry.get("id") or ""),
+        "id": track_id,
         "title": title,
         "artist": artist,
         "duration": duration,
+        "thumbnail": thumbnail,
+        "source_url": music_track_source(entry, source),
     }
+
 
 def collection_type_for(source_url, source, info):
     path = urlparse(source_url).path.lower()
@@ -3288,6 +3324,7 @@ def collection_type_for(source_url, source, info):
     if str((info or {}).get("album") or "").strip():
         return "album"
     return "playlist"
+
 
 def extract_music_collection(source_url, source):
     flat_options = {
@@ -3337,7 +3374,7 @@ def extract_music_collection(source_url, source):
         except Exception as error:
             print(f"Falha ao completar metadata de playlist {source}: {type(error).__name__}: {error}")
 
-    tracks = [music_track_from_entry(entry, index) for index, entry in enumerate(raw_entries, start=1)]
+    tracks = [music_track_from_entry(entry, index, source) for index, entry in enumerate(raw_entries, start=1)]
     if len(tracks) <= 1:
         return None
 
@@ -3351,6 +3388,10 @@ def extract_music_collection(source_url, source):
     collection_id = cache_music_collection(
         source_url, source, title, artist, thumbnail, tracks, collection_type
     )
+    public_tracks = [
+        {key: value for key, value in track.items() if key != "source_url"}
+        for track in tracks
+    ]
     return {
         "status": "ready",
         "source": source,
@@ -3362,9 +3403,10 @@ def extract_music_collection(source_url, source):
         "collection_type": collection_type,
         "collection_id": collection_id,
         "track_count": len(tracks),
-        "tracks": tracks,
+        "tracks": public_tracks,
         "media_count": len(tracks),
     }
+
 
 def extract_music_content(source_url):
     parsed = urlparse(source_url)
@@ -3398,6 +3440,7 @@ def extract_music_content(source_url):
         return None, "Não encontramos uma faixa de áudio disponível neste link."
     return media, None
 
+
 def cleanup_music_jobs():
     now = time.monotonic()
     expired_paths = []
@@ -3413,75 +3456,275 @@ def cleanup_music_jobs():
         except Exception:
             pass
 
+
+def _refresh_music_job_counts(job):
+    tracks = job.get("tracks") or []
+    total = len(tracks)
+    done = sum(1 for track in tracks if track.get("status") == "done")
+    unavailable = sum(1 for track in tracks if track.get("status") == "unavailable")
+    cancelled = sum(1 for track in tracks if track.get("status") == "cancelled")
+    processed = done + unavailable + cancelled
+    if total:
+        progress_sum = sum(max(0.0, min(100.0, float(track.get("progress") or 0))) for track in tracks)
+        overall = int(round(progress_sum / total))
+    else:
+        overall = 0
+    job["file_count"] = done
+    job["unavailable_count"] = unavailable
+    job["cancelled_count"] = cancelled
+    job["processed_count"] = processed
+    job["overall_progress"] = max(0, min(100, overall))
+
+
 def set_music_job(job_id, **updates):
     with MUSIC_JOBS_LOCK:
         job = MUSIC_JOBS.get(job_id)
         if not job:
             return
         job.update(updates)
+        _refresh_music_job_counts(job)
         job["expires"] = time.monotonic() + MUSIC_JOB_TTL
+
+
+def set_music_track(job_id, track_index, **updates):
+    with MUSIC_JOBS_LOCK:
+        job = MUSIC_JOBS.get(job_id)
+        if not job:
+            return
+        for track in job.get("tracks") or []:
+            if track.get("index") == track_index:
+                track.update(updates)
+                break
+        _refresh_music_job_counts(job)
+        job["expires"] = time.monotonic() + MUSIC_JOB_TTL
+
 
 def get_music_job(job_id):
     cleanup_music_jobs()
     with MUSIC_JOBS_LOCK:
         job = MUSIC_JOBS.get(job_id)
-        return dict(job) if job else None
+        return deepcopy(job) if job else None
 
-def prepare_music_zip_job(job_id, collection, selected_items):
+
+def music_job_cancel_requested(job_id):
+    with MUSIC_JOBS_LOCK:
+        job = MUSIC_JOBS.get(job_id)
+        return bool(job and job.get("cancel_requested"))
+
+
+def cancel_music_job(job_id):
+    with MUSIC_JOBS_LOCK:
+        job = MUSIC_JOBS.get(job_id)
+        if not job:
+            return False
+        if job.get("status") in {"ready", "error", "cancelled"}:
+            return True
+        job["cancel_requested"] = True
+        job["message"] = "Cancelando o processamento…"
+        job["expires"] = time.monotonic() + MUSIC_JOB_TTL
+    with MUSIC_JOB_PROCESSES_LOCK:
+        process = MUSIC_JOB_PROCESSES.get(job_id)
+    if process and process.poll() is None:
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            else:
+                process.terminate()
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
+    return True
+
+
+def _track_output_filename(track, total):
+    width = max(2, len(str(max(1, total))))
+    index = int(track.get("index") or 0)
+    title = safe_filename(track.get("title") or f"Faixa {index}") or f"Faixa {index}"
+    title = title[:105].rstrip(" .") or f"Faixa {index}"
+    return f"{index:0{width}d} - {title}.mp3"
+
+
+def _download_music_track(job_id, track, output_dir, total):
+    track_index = int(track.get("index") or 0)
+    source_url = str(track.get("source_url") or "").strip()
+    if not source_url:
+        set_music_track(
+            job_id, track_index, status="unavailable", progress=100,
+            error="Link desta faixa não está disponível.",
+        )
+        return None
+
+    temp_stem = f"soft_track_{track_index:04d}"
+    output_template = str(output_dir / f"{temp_stem}.%(ext)s")
+    command = [
+        sys.executable, "-m", "yt_dlp",
+        "--no-playlist", "--newline", "--no-warnings", "--no-color",
+        "--progress-delta", "0.5",
+        "--progress-template", "download:SOFT_PROGRESS=%(progress._percent_str)s",
+        "--extract-audio", "--audio-format", "mp3", "--audio-quality", "192K",
+        "--windows-filenames", "--trim-filenames", "90",
+        "-o", output_template,
+        source_url,
+    ]
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if os.name == "nt":
+        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+    set_music_track(job_id, track_index, status="downloading", progress=0, error="")
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        creationflags=creationflags,
+    )
+    with MUSIC_JOB_PROCESSES_LOCK:
+        MUSIC_JOB_PROCESSES[job_id] = process
+
+    tail = []
+    try:
+        if process.stdout:
+            for raw_line in process.stdout:
+                line = raw_line.strip()
+                if line:
+                    tail.append(line)
+                    if len(tail) > 20:
+                        tail.pop(0)
+                match = re.search(r"SOFT_PROGRESS=\s*([0-9]+(?:\.[0-9]+)?)%", line)
+                if match:
+                    try:
+                        percent = int(float(match.group(1)))
+                    except (TypeError, ValueError):
+                        percent = 0
+                    set_music_track(job_id, track_index, status="downloading", progress=max(0, min(99, percent)))
+                elif "[ExtractAudio]" in line or "[Fixup" in line:
+                    set_music_track(job_id, track_index, status="converting", progress=99)
+
+                if music_job_cancel_requested(job_id) and process.poll() is None:
+                    try:
+                        process.terminate()
+                    except Exception:
+                        pass
+                    break
+        return_code = process.wait(timeout=45)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except Exception:
+            pass
+        return_code = -1
+    finally:
+        with MUSIC_JOB_PROCESSES_LOCK:
+            if MUSIC_JOB_PROCESSES.get(job_id) is process:
+                MUSIC_JOB_PROCESSES.pop(job_id, None)
+
+    if music_job_cancel_requested(job_id):
+        set_music_track(job_id, track_index, status="cancelled", progress=100, error="")
+        return None
+
+    candidates = sorted(output_dir.glob(f"{temp_stem}*.mp3"))
+    if candidates:
+        source_file = candidates[0]
+        final_path = output_dir / _track_output_filename(track, total)
+        if final_path.exists():
+            final_path.unlink()
+        source_file.replace(final_path)
+        set_music_track(job_id, track_index, status="done", progress=100, error="")
+        return final_path
+
+    detail = "\n".join(tail[-8:])
+    if detail:
+        print(f"Faixa indisponível no pacote ({track_index} - {track.get('title')}): {detail[-1200:]}")
+    set_music_track(
+        job_id, track_index, status="unavailable", progress=100,
+        error="Esta música não pôde ser baixada.",
+    )
+    return None
+
+
+def prepare_music_zip_job(job_id, collection, selected_tracks):
     with MUSIC_JOB_SEMAPHORE:
         work_dir = Path(RUNTIME_CACHE_DIR) / "music-jobs" / job_id
         folder_name = safe_filename(collection.get("title") or "Músicas") or "Músicas"
+        folder_name = folder_name[:110].rstrip(" .") or "Músicas"
         output_dir = work_dir / folder_name
         zip_path = work_dir / f"{folder_name}.zip"
+        prepared_files = []
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
-            set_music_job(job_id, status="working", message="Baixando e convertendo as músicas…", work_dir=str(work_dir))
-
-            playlist_items = ",".join(str(value) for value in selected_items)
-            output_template = str(output_dir / "%(playlist_index)02d - %(title)s.%(ext)s")
-            command = [
-                sys.executable, "-m", "yt_dlp",
-                "--quiet", "--no-warnings", "--no-progress",
-                "--ignore-errors",
-                "--playlist-items", playlist_items,
-                "--extract-audio", "--audio-format", "mp3", "--audio-quality", "192K",
-                "--windows-filenames", "--trim-filenames", "120",
-                "-o", output_template,
-                collection["source_url"],
-            ]
-            result = subprocess.run(
-                command, capture_output=True, text=True, timeout=2 * 60 * 60,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            set_music_job(
+                job_id, status="working", message="Baixando as músicas selecionadas…",
+                work_dir=str(work_dir), current_index=None,
             )
-            mp3_files = sorted(path for path in output_dir.rglob("*.mp3") if path.is_file())
-            if not mp3_files:
-                detail = (result.stderr or result.stdout or "").strip()
-                if detail:
-                    print(f"Falha no pacote de músicas: {detail[-1800:]}")
+
+            total = len(selected_tracks)
+            for track in selected_tracks:
+                track_index = int(track.get("index") or 0)
+                if music_job_cancel_requested(job_id):
+                    break
+                set_music_job(
+                    job_id,
+                    message=f"Preparando {track.get('title') or f'Faixa {track_index}'}…",
+                    current_index=track_index,
+                )
+                prepared = _download_music_track(job_id, track, output_dir, total)
+                if prepared:
+                    prepared_files.append(prepared)
+
+            if music_job_cancel_requested(job_id):
+                with MUSIC_JOBS_LOCK:
+                    job = MUSIC_JOBS.get(job_id)
+                    if job:
+                        for track in job.get("tracks") or []:
+                            if track.get("status") in {"waiting", "downloading", "converting"}:
+                                track["status"] = "cancelled"
+                                track["progress"] = 100
+                        job["status"] = "cancelled"
+                        job["message"] = "Processamento cancelado."
+                        _refresh_music_job_counts(job)
+                        job["expires"] = time.monotonic() + MUSIC_JOB_TTL
+                return
+
+            if not prepared_files:
                 raise RuntimeError("Nenhuma música pôde ser preparada.")
 
-            set_music_job(job_id, message="Organizando as músicas em um arquivo ZIP…")
+            set_music_job(job_id, status="packing", message="Organizando as músicas no ZIP…", current_index=None)
             with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
-                for music_file in mp3_files:
+                for music_file in prepared_files:
                     archive.write(music_file, arcname=str(music_file.relative_to(work_dir)))
 
             set_music_job(
                 job_id, status="ready", message="ZIP pronto para baixar.",
                 zip_path=str(zip_path), filename=f"{folder_name}.zip",
-                file_count=len(mp3_files),
+                file_count=len(prepared_files), overall_progress=100,
             )
-        except subprocess.TimeoutExpired:
-            set_music_job(job_id, status="error", error="O pacote demorou mais que o limite permitido.", message="Falha ao preparar o ZIP.")
         except Exception as error:
             print(f"Falha ao preparar ZIP de músicas: {type(error).__name__}: {error}")
-            set_music_job(job_id, status="error", error=str(error) or "Não foi possível preparar o ZIP.", message="Falha ao preparar o ZIP.")
+            set_music_job(
+                job_id, status="error", error=str(error) or "Não foi possível preparar o ZIP.",
+                message="Falha ao preparar o ZIP.", current_index=None,
+            )
+
 
 def start_music_job(collection_id, selected_items):
     collection = get_music_collection(collection_id)
     if not collection:
         return None, "Este álbum ou playlist expirou. Analise o link novamente."
 
-    valid_indices = {track.get("index") for track in collection.get("tracks") or []}
+    track_map = {
+        int(track.get("index")): track
+        for track in collection.get("tracks") or []
+        if isinstance(track, dict) and str(track.get("index") or "").isdigit()
+    }
     normalized = []
     seen = set()
     for value in selected_items or []:
@@ -3489,12 +3732,27 @@ def start_music_job(collection_id, selected_items):
             index = int(value)
         except (TypeError, ValueError):
             continue
-        if index in valid_indices and index not in seen:
+        if index in track_map and index not in seen:
             normalized.append(index)
             seen.add(index)
     normalized.sort()
     if not normalized:
         return None, "Selecione pelo menos uma música."
+
+    selected_tracks = [dict(track_map[index]) for index in normalized]
+    public_tracks = [
+        {
+            "index": int(track.get("index") or 0),
+            "title": track.get("title") or f"Faixa {track.get('index')}",
+            "artist": track.get("artist") or "",
+            "duration": track.get("duration"),
+            "thumbnail": track.get("thumbnail") or collection.get("thumbnail") or "",
+            "status": "waiting",
+            "progress": 0,
+            "error": "",
+        }
+        for track in selected_tracks
+    ]
 
     cleanup_music_jobs()
     job_id = secrets.token_urlsafe(24)
@@ -3503,10 +3761,20 @@ def start_music_job(collection_id, selected_items):
             "status": "queued",
             "message": "Preparando o pacote de músicas…",
             "collection_id": collection_id,
+            "collection_title": collection.get("title") or "Músicas",
+            "collection_type": collection.get("collection_type") or "playlist",
+            "collection_thumbnail": collection.get("thumbnail") or "",
             "selected_count": len(normalized),
+            "tracks": public_tracks,
+            "file_count": 0,
+            "unavailable_count": 0,
+            "cancelled_count": 0,
+            "processed_count": 0,
+            "overall_progress": 0,
+            "cancel_requested": False,
             "expires": time.monotonic() + MUSIC_JOB_TTL,
         }
-    Thread(target=prepare_music_zip_job, args=(job_id, collection, normalized), daemon=True).start()
+    Thread(target=prepare_music_zip_job, args=(job_id, collection, selected_tracks), daemon=True).start()
     return job_id, None
 
 
@@ -3528,6 +3796,8 @@ class WorkerHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/music-job":
             return self.create_music_job()
+        if self.path == "/music-job-cancel":
+            return self.cancel_music_job_request()
         if self.path != "/extract":
             return self.respond(404, {"error": "Rota não encontrada."})
         if WORKER_SECRET and not hmac.compare_digest(
@@ -3575,12 +3845,30 @@ class WorkerHandler(BaseHTTPRequestHandler):
             "status": job.get("status", "queued"),
             "message": job.get("message", "Preparando o pacote de músicas…"),
             "selected_count": job.get("selected_count", 0),
+            "file_count": job.get("file_count", 0),
+            "unavailable_count": job.get("unavailable_count", 0),
+            "cancelled_count": job.get("cancelled_count", 0),
+            "processed_count": job.get("processed_count", 0),
+            "overall_progress": job.get("overall_progress", 0),
+            "current_index": job.get("current_index"),
+            "collection_title": job.get("collection_title") or "Músicas",
+            "collection_type": job.get("collection_type") or "playlist",
+            "tracks": job.get("tracks") or [],
         }
-        if job.get("status") == "ready":
-            payload["file_count"] = job.get("file_count", 0)
         if job.get("status") == "error":
             payload["error"] = job.get("error") or "Não foi possível preparar o ZIP."
         return self.respond(200, payload)
+
+    def cancel_music_job_request(self):
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            data = json.loads(self.rfile.read(size) or b"{}")
+            job_id = str(data.get("id", "")).strip()
+            if not job_id or not cancel_music_job(job_id):
+                return self.respond(404, {"error": "Pacote não encontrado ou expirado."})
+            return self.respond(200, {"status": "cancelling"})
+        except Exception:
+            return self.respond(422, {"error": "Não foi possível cancelar o processamento."})
 
     def download_music_zip(self):
         query = parse_qs(urlparse(self.path).query)

@@ -51,6 +51,10 @@ const MUSIC_COLLECTION_SOURCE_NAMES = {
 
 const WORKER_MEDIA_HOST = 'api.forgeaioficial.online';
 let activeResultItems = [];
+let activeMusicCollection = null;
+let activeMusicJobId = null;
+let activeMusicJobState = null;
+let musicProgressOverlay = null;
 
 function hasWorkerProxy(data) {
   if (!data || !['tiktok', 'youtube'].includes(data.source)) return true;
@@ -193,7 +197,12 @@ syncThumbnailClearButton();
 
 resultBack.addEventListener('click', closeResultScreen);
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !resultScreen.hidden) closeResultScreen();
+  if (event.key !== 'Escape') return;
+  if (musicProgressOverlay && !musicProgressOverlay.hidden) {
+    if (['ready', 'error', 'cancelled'].includes(activeMusicJobState)) closeMusicProgressModal();
+    return;
+  }
+  if (!resultScreen.hidden) closeResultScreen();
 });
 
 function isMusicContent(data) {
@@ -521,6 +530,7 @@ function resetResult() {
   carouselItems.replaceChildren();
   carouselItems.hidden = true;
   activeResultItems = [];
+  activeMusicCollection = null;
   downloadLink.hidden = true;
   downloadLink.href = '#';
   downloadLink.textContent = 'BAIXAR ARQUIVO';
@@ -768,7 +778,28 @@ function renderMusicResult(data) {
   downloadLink.dataset.mode = 'music';
 }
 
+function createMusicThumb(url, fallbackUrl = '') {
+  const thumb = document.createElement('span');
+  thumb.className = 'music-track-thumb';
+  const source = url || fallbackUrl;
+  if (!source) {
+    thumb.classList.add('is-fallback');
+    return thumb;
+  }
+  const image = document.createElement('img');
+  image.src = source;
+  image.alt = '';
+  image.loading = 'lazy';
+  image.addEventListener('error', () => {
+    image.remove();
+    thumb.classList.add('is-fallback');
+  });
+  thumb.append(image);
+  return thumb;
+}
+
 function renderMusicCollection(data) {
+  activeMusicCollection = data;
   result.classList.add('is-music-collection');
   result.classList.remove('is-carousel', 'is-mp3', 'is-thumbnail');
   resultStage.classList.remove('carousel-mode');
@@ -840,6 +871,8 @@ function renderMusicCollection(data) {
     checkbox.className = 'music-track-check';
     checkboxes.push(checkbox);
 
+    const thumb = createMusicThumb(track.thumbnail, data.thumbnail);
+
     const index = document.createElement('span');
     index.className = 'music-track-index';
     index.textContent = String(track.index || position + 1).padStart(2, '0');
@@ -856,7 +889,7 @@ function renderMusicCollection(data) {
     if (!trackMeta.textContent) trackMeta.hidden = true;
     text.append(trackTitle, trackMeta);
 
-    row.append(checkbox, index, text);
+    row.append(checkbox, thumb, index, text);
     list.append(row);
   });
 
@@ -886,6 +919,239 @@ function renderMusicCollection(data) {
   downloadLink.dataset.collectionId = data.collection_id || '';
   delete downloadLink.dataset.mediaUrl;
   delete downloadLink.dataset.filename;
+}
+
+function musicJobStatusLabel(status) {
+  return {
+    waiting: 'AGUARDANDO',
+    downloading: 'BAIXANDO...',
+    converting: 'CONVERTENDO...',
+    done: 'CONCLUÍDA',
+    unavailable: 'INDISPONÍVEL',
+    cancelled: 'CANCELADA',
+  }[status] || 'AGUARDANDO';
+}
+
+function ensureMusicProgressModal() {
+  if (musicProgressOverlay) return musicProgressOverlay;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'music-progress-overlay';
+  overlay.hidden = true;
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'musicProgressTitle');
+
+  const modal = document.createElement('section');
+  modal.className = 'music-progress-modal';
+
+  const header = document.createElement('header');
+  header.className = 'music-progress-header';
+  const heading = document.createElement('div');
+  const eyebrow = document.createElement('span');
+  eyebrow.className = 'music-progress-eyebrow';
+  eyebrow.textContent = 'SOFT DOWNLOADERS';
+  const title = document.createElement('h2');
+  title.id = 'musicProgressTitle';
+  title.textContent = 'PREPARANDO PLAYLIST';
+  const summary = document.createElement('p');
+  summary.className = 'music-progress-summary';
+  heading.append(eyebrow, title, summary);
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'music-progress-close';
+  close.setAttribute('aria-label', 'Fechar');
+  close.textContent = '×';
+  close.hidden = true;
+  close.addEventListener('click', closeMusicProgressModal);
+  header.append(heading, close);
+
+  const overall = document.createElement('div');
+  overall.className = 'music-job-progress';
+  const overallFill = document.createElement('span');
+  overallFill.className = 'music-job-progress-fill';
+  overall.append(overallFill);
+
+  const list = document.createElement('div');
+  list.className = 'music-progress-list';
+
+  const footer = document.createElement('footer');
+  footer.className = 'music-progress-footer';
+  const footerMessage = document.createElement('p');
+  footerMessage.className = 'music-progress-footer-message';
+  const actions = document.createElement('div');
+  actions.className = 'music-progress-actions';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'music-progress-cancel';
+  cancel.textContent = 'CANCELAR';
+  cancel.addEventListener('click', cancelActiveMusicJob);
+  const download = document.createElement('button');
+  download.type = 'button';
+  download.className = 'music-progress-download';
+  download.textContent = 'BAIXAR ZIP';
+  download.hidden = true;
+  download.addEventListener('click', () => {
+    if (!activeMusicJobId) return;
+    const frame = document.createElement('iframe');
+    frame.hidden = true;
+    frame.setAttribute('aria-hidden', 'true');
+    frame.src = `https://${WORKER_MEDIA_HOST}/music-zip?id=${encodeURIComponent(activeMusicJobId)}`;
+    document.body.append(frame);
+    window.setTimeout(() => frame.remove(), 2 * 60 * 60 * 1000);
+    download.textContent = 'DOWNLOAD INICIADO';
+    download.disabled = true;
+  });
+  actions.append(cancel, download);
+  footer.append(footerMessage, actions);
+
+  modal.append(header, overall, list, footer);
+  overlay.append(modal);
+  document.body.append(overlay);
+
+  overlay._title = title;
+  overlay._summary = summary;
+  overlay._overallFill = overallFill;
+  overlay._list = list;
+  overlay._close = close;
+  overlay._footerMessage = footerMessage;
+  overlay._cancel = cancel;
+  overlay._download = download;
+  musicProgressOverlay = overlay;
+  return overlay;
+}
+
+function openMusicProgressModal(tracks, collection) {
+  const overlay = ensureMusicProgressModal();
+  activeMusicJobState = 'queued';
+  overlay.hidden = false;
+  document.body.classList.add('music-progress-open');
+  overlay._title.textContent = `PREPARANDO ${collection?.collection_type === 'album' ? 'ÁLBUM' : 'PLAYLIST'}`;
+  overlay._summary.textContent = `0 de ${tracks.length} concluídas • 0%`;
+  overlay._overallFill.style.width = '0%';
+  overlay._close.hidden = true;
+  overlay._cancel.hidden = false;
+  overlay._cancel.disabled = false;
+  overlay._cancel.textContent = 'CANCELAR';
+  overlay._download.hidden = true;
+  overlay._download.disabled = false;
+  overlay._download.textContent = 'BAIXAR ZIP';
+  overlay._footerMessage.textContent = 'As músicas são processadas uma por vez. Faixas indisponíveis serão ignoradas sem interromper as demais.';
+  overlay._list.replaceChildren();
+  overlay._trackRows = new Map();
+
+  tracks.forEach((track, position) => {
+    const row = document.createElement('div');
+    row.className = 'music-progress-row';
+    row.dataset.trackIndex = String(track.index || position + 1);
+    const thumb = createMusicThumb(track.thumbnail, collection?.thumbnail);
+    thumb.classList.add('music-progress-thumb');
+    const index = document.createElement('span');
+    index.className = 'music-progress-index';
+    index.textContent = String(track.index || position + 1).padStart(2, '0');
+    const info = document.createElement('div');
+    info.className = 'music-progress-track-info';
+    const name = document.createElement('strong');
+    name.textContent = track.title || `Faixa ${position + 1}`;
+    const meta = document.createElement('small');
+    const details = [];
+    if (track.artist) details.push(track.artist);
+    if (track.duration) details.push(formatAudioTime(track.duration));
+    meta.textContent = details.join(' • ');
+    if (!meta.textContent) meta.hidden = true;
+    info.append(name, meta);
+    const status = document.createElement('div');
+    status.className = 'music-progress-track-status';
+    const percent = document.createElement('strong');
+    percent.textContent = '0%';
+    const label = document.createElement('small');
+    label.textContent = 'AGUARDANDO';
+    status.append(percent, label);
+    row.append(thumb, index, info, status);
+    overlay._list.append(row);
+    overlay._trackRows.set(String(track.index || position + 1), row);
+  });
+}
+
+function updateMusicProgressModal(status) {
+  const overlay = ensureMusicProgressModal();
+  activeMusicJobState = status.status || activeMusicJobState;
+  const total = Number(status.selected_count || status.tracks?.length || 0);
+  const done = Number(status.file_count || 0);
+  const unavailable = Number(status.unavailable_count || 0);
+  const cancelled = Number(status.cancelled_count || 0);
+  const progress = Math.max(0, Math.min(100, Number(status.overall_progress || 0)));
+  const summaryParts = [`${done} de ${total} concluídas`];
+  if (unavailable) summaryParts.push(`${unavailable} indisponíveis`);
+  if (cancelled) summaryParts.push(`${cancelled} canceladas`);
+  summaryParts.push(`${Math.round(progress)}%`);
+  overlay._summary.textContent = summaryParts.join(' • ');
+  overlay._overallFill.style.width = `${progress}%`;
+
+  (status.tracks || []).forEach((track) => {
+    const row = overlay._trackRows?.get(String(track.index));
+    if (!row) return;
+    const percent = row.querySelector('.music-progress-track-status strong');
+    const label = row.querySelector('.music-progress-track-status small');
+    if (percent) percent.textContent = `${Math.round(Number(track.progress || 0))}%`;
+    if (label) label.textContent = musicJobStatusLabel(track.status);
+    row.dataset.status = track.status || 'waiting';
+  });
+
+  const finalState = ['ready', 'error', 'cancelled'].includes(status.status);
+  overlay._close.hidden = !finalState;
+  overlay._cancel.hidden = finalState;
+  overlay._download.hidden = status.status !== 'ready';
+
+  if (status.status === 'ready') {
+    overlay._title.textContent = `${status.collection_type === 'album' ? 'ÁLBUM' : 'PLAYLIST'} PRONTA`;
+    overlay._footerMessage.textContent = unavailable
+      ? `${done} músicas prontas. ${unavailable} faixas indisponíveis foram ignoradas.`
+      : `${done} músicas prontas para baixar.`;
+  } else if (status.status === 'error') {
+    overlay._title.textContent = 'NÃO FOI POSSÍVEL CONCLUIR';
+    overlay._footerMessage.textContent = status.error || 'Nenhuma música pôde ser preparada.';
+  } else if (status.status === 'cancelled') {
+    overlay._title.textContent = 'PROCESSAMENTO CANCELADO';
+    overlay._footerMessage.textContent = 'O processamento das músicas foi cancelado.';
+  } else if (status.status === 'packing') {
+    overlay._footerMessage.textContent = 'Organizando as músicas concluídas em um único arquivo ZIP…';
+  } else {
+    overlay._footerMessage.textContent = status.message || 'Baixando e convertendo as músicas…';
+  }
+}
+
+function showMusicProgressFailure(message) {
+  const overlay = ensureMusicProgressModal();
+  activeMusicJobState = 'error';
+  overlay._title.textContent = 'NÃO FOI POSSÍVEL CONCLUIR';
+  overlay._footerMessage.textContent = message || 'Não foi possível preparar o ZIP.';
+  overlay._close.hidden = false;
+  overlay._cancel.hidden = true;
+  overlay._download.hidden = true;
+}
+
+function closeMusicProgressModal() {
+  if (!musicProgressOverlay || musicProgressOverlay.hidden) return;
+  if (!['ready', 'error', 'cancelled'].includes(activeMusicJobState)) return;
+  musicProgressOverlay.hidden = true;
+  document.body.classList.remove('music-progress-open');
+}
+
+async function cancelActiveMusicJob() {
+  if (!activeMusicJobId || !musicProgressOverlay) return;
+  musicProgressOverlay._cancel.disabled = true;
+  musicProgressOverlay._cancel.textContent = 'CANCELANDO...';
+  try {
+    await fetch(`https://${WORKER_MEDIA_HOST}/music-job-cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: activeMusicJobId }),
+    });
+  } catch (_) {
+    musicProgressOverlay._cancel.disabled = false;
+    musicProgressOverlay._cancel.textContent = 'CANCELAR';
+  }
 }
 
 function renderMp3Result(data) {
@@ -1163,10 +1429,15 @@ async function downloadMusicCollection(button) {
     .filter((value) => Number.isInteger(value) && value > 0);
   if (!selected.length) return showDownloadStatus('Selecione pelo menos uma música.', true);
 
+  const selectedSet = new Set(selected);
+  const selectedTracks = (activeMusicCollection?.tracks || []).filter((track) => selectedSet.has(Number(track.index)));
+  hideDownloadStatus();
+  openMusicProgressModal(selectedTracks, activeMusicCollection || {});
+
   const originalLabel = button.textContent;
   button.disabled = true;
-  button.textContent = 'PREPARANDO ZIP…';
-  showDownloadStatus(`Preparando ${selected.length} ${selected.length === 1 ? 'música' : 'músicas'}…`);
+  button.textContent = 'PROCESSANDO…';
+  activeMusicJobId = null;
 
   try {
     const response = await fetch(`https://${WORKER_MEDIA_HOST}/music-job`, {
@@ -1176,34 +1447,21 @@ async function downloadMusicCollection(button) {
     });
     const job = await response.json();
     if (!response.ok || !job.job_id) throw new Error(job.error || 'Não foi possível iniciar o pacote de músicas.');
+    activeMusicJobId = job.job_id;
 
     const startedAt = Date.now();
     while (Date.now() - startedAt < 2 * 60 * 60 * 1000) {
-      await new Promise((resolve) => window.setTimeout(resolve, 1800));
       const statusResponse = await fetch(`https://${WORKER_MEDIA_HOST}/music-job?id=${encodeURIComponent(job.job_id)}`, { cache: 'no-store' });
       const status = await statusResponse.json();
       if (!statusResponse.ok) throw new Error(status.error || 'Não foi possível acompanhar o download.');
+      updateMusicProgressModal(status);
 
-      if (status.status === 'ready') {
-        showDownloadStatus('ZIP pronto. Enviando o download ao navegador…');
-        const transferFrame = document.createElement('iframe');
-        transferFrame.hidden = true;
-        transferFrame.setAttribute('aria-hidden', 'true');
-        transferFrame.src = `https://${WORKER_MEDIA_HOST}/music-zip?id=${encodeURIComponent(job.job_id)}`;
-        document.body.append(transferFrame);
-        window.setTimeout(() => transferFrame.remove(), 2 * 60 * 60 * 1000);
-        window.setTimeout(() => {
-          showDownloadStatus('Download enviado ao navegador.');
-          window.setTimeout(hideDownloadStatus, 5000);
-        }, 2500);
-        return;
-      }
-      if (status.status === 'error') throw new Error(status.error || 'Não foi possível preparar o ZIP.');
-      showDownloadStatus(status.message || 'Baixando e organizando as músicas…');
+      if (['ready', 'error', 'cancelled'].includes(status.status)) return;
+      await new Promise((resolve) => window.setTimeout(resolve, 1200));
     }
     throw new Error('O pacote demorou mais que o esperado. Tente novamente com menos músicas.');
   } catch (error) {
-    showDownloadStatus(error.message || 'Não foi possível preparar o ZIP.', true);
+    showMusicProgressFailure(error.message || 'Não foi possível preparar o ZIP.');
   } finally {
     button.disabled = false;
     button.textContent = originalLabel;

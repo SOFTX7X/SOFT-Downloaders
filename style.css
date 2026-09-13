@@ -253,13 +253,13 @@ body.result-screen-open{overflow:hidden}
 
 
 /* Álbuns e playlists dentro de Músicas */
-.result.is-music-collection{width:min(760px,100%)}
-.result-preview[data-type="music-collection"]{width:min(720px,100%);height:auto;background:transparent;overflow:visible;display:block}
+.result.is-music-collection{width:min(800px,100%)}
+.result-preview[data-type="music-collection"]{width:min(760px,100%);height:auto;background:transparent;overflow:visible;display:block}
 .music-collection-card{width:100%;display:grid;gap:18px;text-align:left}
 .music-collection-header{display:grid;grid-template-columns:112px minmax(0,1fr);align-items:center;gap:18px;padding-bottom:18px;border-bottom:1px solid var(--line)}
-.music-collection-cover{position:relative;width:112px;height:112px;overflow:hidden;background:linear-gradient(145deg,#171320,#7444ff);border:1px solid var(--line)}
+.music-collection-cover{position:relative;width:112px;height:112px;overflow:hidden;background:#f2f4f3;border:1px solid var(--line)}
 .music-collection-cover img{display:block;width:100%;height:100%;object-fit:cover}
-.music-collection-cover.is-fallback::after{content:"♪";position:absolute;inset:0;display:grid;place-items:center;color:#fff;font:800 42px/1 "Manrope",sans-serif}
+.music-collection-cover.is-fallback::after{content:"♪";position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font:800 42px/1 "Manrope",sans-serif}
 .music-collection-info{min-width:0}
 .music-collection-type{display:block;margin-bottom:7px;color:var(--violet);font-size:11px;font-weight:800;letter-spacing:1px}
 .music-collection-info h2{overflow:hidden;margin:0;color:var(--ink);font:800 clamp(22px,4vw,32px)/1.08 "Manrope",sans-serif;letter-spacing:-1.1px;text-overflow:ellipsis}
@@ -268,15 +268,49 @@ body.result-screen-open{overflow:hidden}
 .music-select-all{display:inline-flex;align-items:center;gap:9px;color:var(--ink);font-size:13px;font-weight:800;cursor:pointer}
 .music-select-all input,.music-track-check{width:18px;height:18px;margin:0;accent-color:var(--violet);cursor:pointer}
 .music-selection-count{color:var(--muted);font-size:12px;font-weight:700}
-.music-track-list{max-height:min(46vh,500px);overflow:auto;border:1px solid var(--line);background:#fff}
-.music-track-row{min-height:58px;display:grid;grid-template-columns:20px 34px minmax(0,1fr);align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--line);cursor:pointer;transition:background .14s ease}
+.music-track-list{max-height:min(50vh,540px);overflow:auto;border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:#fff}
+.music-track-row{min-height:68px;display:grid;grid-template-columns:20px 48px 30px minmax(0,1fr);align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--line);cursor:pointer;background:#fff}
 .music-track-row:last-child{border-bottom:0}
-.music-track-row:hover{background:var(--surface)}
+.music-track-row:hover{background:#fbfcfb}
+.music-track-thumb{position:relative;width:48px;height:48px;overflow:hidden;border:1px solid var(--line);background:#f2f4f3;flex:none}
+.music-track-thumb img{display:block;width:100%;height:100%;object-fit:cover}
+.music-track-thumb.is-fallback::after{content:"♪";position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font:800 18px/1 "Manrope",sans-serif}
 .music-track-index{color:var(--muted);font-size:12px;font-weight:800;font-variant-numeric:tabular-nums}
 .music-track-text{min-width:0;display:grid;gap:3px}
 .music-track-text strong{overflow:hidden;color:var(--ink);font-size:14px;line-height:1.25;text-overflow:ellipsis;white-space:nowrap}
 .music-track-text small{overflow:hidden;color:var(--muted);font-size:11px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
 .download-link.is-disabled{opacity:.5;pointer-events:none}
+
+/* Janela grande de progresso da playlist/álbum. */
+body.music-progress-open{overflow:hidden}
+.music-progress-overlay[hidden]{display:none!important}
+.music-progress-overlay{position:fixed;inset:0;z-index:9999;display:grid;place-items:center;padding:24px;background:rgba(23,33,42,.26)}
+.music-progress-modal{width:min(900px,100%);max-height:min(88vh,820px);display:grid;grid-template-rows:auto auto minmax(0,1fr) auto;background:#fff;border:1px solid #d9dfdc;box-shadow:0 24px 70px rgba(23,33,42,.2);overflow:hidden}
+.music-progress-header{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding:24px 26px 18px;border-bottom:1px solid var(--line)}
+.music-progress-eyebrow{display:block;margin-bottom:5px;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:1.3px}
+.music-progress-header h2{margin:0;color:var(--ink);font:800 24px/1.1 "Manrope",sans-serif;letter-spacing:-.7px}
+.music-progress-summary{margin:7px 0 0;color:var(--muted);font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+.music-progress-close{width:36px;height:36px;border:1px solid var(--line);background:#fff;color:var(--ink);font:500 25px/1 sans-serif;cursor:pointer}
+.music-job-progress{height:3px;background:#e8ecea;overflow:hidden}
+.music-job-progress-fill{display:block;width:0;height:100%;background:var(--ink);transition:width .22s ease}
+.music-progress-list{min-height:0;overflow:auto;padding:0 26px}
+.music-progress-row{min-height:72px;display:grid;grid-template-columns:50px 34px minmax(0,1fr) 116px;align-items:center;gap:12px;border-bottom:1px solid var(--line);background:#fff}
+.music-progress-row:last-child{border-bottom:0}
+.music-progress-thumb{width:50px;height:50px}
+.music-progress-index{color:var(--muted);font-size:12px;font-weight:800;font-variant-numeric:tabular-nums}
+.music-progress-track-info{min-width:0;display:grid;gap:3px}
+.music-progress-track-info strong{overflow:hidden;color:var(--ink);font-size:14px;line-height:1.25;text-overflow:ellipsis;white-space:nowrap}
+.music-progress-track-info small{overflow:hidden;color:var(--muted);font-size:11px;font-weight:600;text-overflow:ellipsis;white-space:nowrap}
+.music-progress-track-status{min-width:0;display:grid;justify-items:end;gap:3px;text-align:right;font-variant-numeric:tabular-nums}
+.music-progress-track-status strong{color:var(--ink);font-size:13px;font-weight:800}
+.music-progress-track-status small{color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.35px;white-space:nowrap}
+.music-progress-footer{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:18px 26px;border-top:1px solid var(--line);background:#fff}
+.music-progress-footer-message{max-width:580px;margin:0;color:var(--muted);font-size:12px;font-weight:600;line-height:1.45}
+.music-progress-actions{display:flex;align-items:center;gap:9px;flex:none}
+.music-progress-cancel,.music-progress-download{min-height:40px;padding:0 16px;border:1px solid #cfd6d2;background:#fff;color:var(--ink);font-size:12px;font-weight:800;cursor:pointer}
+.music-progress-download{border-color:var(--violet);background:var(--violet);color:#fff}
+.music-progress-cancel:disabled,.music-progress-download:disabled{opacity:.55;cursor:default}
+
 @media (max-width:640px){
   .result-preview[data-type="music-collection"]{width:100%}
   .music-collection-card{gap:14px}
@@ -287,6 +321,24 @@ body.result-screen-open{overflow:hidden}
   .music-selection-controls{align-items:flex-start}
   .music-selection-count{text-align:right}
   .music-track-list{max-height:50vh}
-  .music-track-row{grid-template-columns:20px 30px minmax(0,1fr);gap:8px;padding:9px 10px}
-  .music-track-text strong{font-size:13px}
+  .music-track-row{grid-template-columns:18px 42px 25px minmax(0,1fr);gap:7px;padding:8px 2px;min-height:60px}
+  .music-track-thumb{width:42px;height:42px}
+  .music-track-text strong{font-size:12.5px}
+  .music-track-text small{font-size:10.5px}
+
+  .music-progress-overlay{padding:0;place-items:stretch}
+  .music-progress-modal{width:100%;max-height:none;height:100%;border:0;box-shadow:none}
+  .music-progress-header{padding:19px 17px 15px}
+  .music-progress-header h2{font-size:20px}
+  .music-progress-list{padding:0 16px}
+  .music-progress-row{min-height:66px;grid-template-columns:44px 26px minmax(0,1fr) 88px;gap:8px}
+  .music-progress-thumb{width:44px;height:44px}
+  .music-progress-track-info strong{font-size:12.5px}
+  .music-progress-track-info small{font-size:10px}
+  .music-progress-track-status strong{font-size:12px}
+  .music-progress-track-status small{font-size:9px;letter-spacing:0}
+  .music-progress-footer{display:grid;gap:12px;padding:14px 16px}
+  .music-progress-actions{display:grid;grid-template-columns:1fr 1fr;width:100%}
+  .music-progress-cancel,.music-progress-download{width:100%}
 }
+
