@@ -24,7 +24,6 @@ class handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(length) or b"{}")
             source_url = str(payload.get("url", "")).strip()
-            mode = str(payload.get("mode", "")).strip().lower()
             parsed = urlparse(source_url)
             host = parsed.hostname.lower().removeprefix("www.") if parsed.hostname else ""
             direct_extension = parsed.path.rsplit(".", 1)[-1].lower() if "." in parsed.path else ""
@@ -40,7 +39,7 @@ class handler(BaseHTTPRequestHandler):
             worker_url = os.environ.get("SOFT_WORKER_URL", "https://api.forgeaioficial.online").rstrip("/")
             worker_secret = os.environ.get("SOFT_WORKER_SECRET", "")
             if worker_url:
-                proxied = request_pc_worker(worker_url, worker_secret, source_url, mode=mode)
+                proxied = request_pc_worker(worker_url, worker_secret, source_url)
                 if proxied:
                     return self.respond(200, proxied)
                 # O PC worker é a fonte completa das plataformas sociais. Não
@@ -246,9 +245,9 @@ def extract_embedded_url(page, field):
     return match.group(1).replace("\\u0026", "&").replace("\\/", "/").replace("\\", "")
 
 
-def request_pc_worker(worker_url, worker_secret, source_url, mode=""):
+def request_pc_worker(worker_url, worker_secret, source_url):
     """Consulta o PC worker uma vez; retries das fontes ficam dentro dele."""
-    body = json.dumps({"url": source_url, "mode": mode}).encode("utf-8")
+    body = json.dumps({"url": source_url}).encode("utf-8")
     request = Request(
         f"{worker_url}/extract",
         data=body,
