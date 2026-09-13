@@ -14,9 +14,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Semaphore, Thread
 from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
@@ -52,6 +53,13 @@ MEDIA_HOSTS = (
 MEDIA_CACHE_TTL = 20 * 60
 MEDIA_CACHE = {}
 MEDIA_CACHE_LOCK = Lock()
+MUSIC_COLLECTION_CACHE_TTL = 45 * 60
+MUSIC_COLLECTION_CACHE = {}
+MUSIC_COLLECTION_CACHE_LOCK = Lock()
+MUSIC_JOB_TTL = 2 * 60 * 60
+MUSIC_JOBS = {}
+MUSIC_JOBS_LOCK = Lock()
+MUSIC_JOB_SEMAPHORE = Semaphore(2)
 RUNTIME_CACHE_DIR = Path(tempfile.gettempdir()) / "soft-downloaders-worker-cache"
 RUNTIME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 TIKTOK_SESSION_COOKIEFILE = RUNTIME_CACHE_DIR / "tiktok-session.cookies.txt"
@@ -3181,6 +3189,327 @@ def normalize_carousel_media(info, host, sanitized_info=None):
     return primary
 
 
+MUSIC_SOURCES = {"soundcloud", "bandcamp", "audius", "bandlab"}
+
+def detect_music_source(host):
+    host = (host or "").lower().removeprefix("www.")
+    if host == "soundcloud.com" or host.endswith(".soundcloud.com"):
+        return "soundcloud"
+    if host == "bandcamp.com" or host.endswith(".bandcamp.com"):
+        return "bandcamp"
+    if host == "audius.co" or host.endswith(".audius.co"):
+        return "audius"
+    if host == "bandlab.com" or host.endswith(".bandlab.com"):
+        return "bandlab"
+    if host == "youtube.com" or host.endswith(".youtube.com") or host == "youtu.be":
+        return "youtube"
+    return None
+
+def is_youtube_playlist_url(source_url):
+    parsed = urlparse(source_url)
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    if not (host == "youtube.com" or host.endswith(".youtube.com") or host == "youtu.be"):
+        return False
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    return "/playlist" in parsed.path.lower() or bool(query.get("list"))
+
+def looks_like_music_collection_url(source_url, source):
+    parsed = urlparse(source_url)
+    path = parsed.path.lower()
+    if source == "youtube":
+        return is_youtube_playlist_url(source_url)
+    if source == "soundcloud":
+        return "/sets/" in path
+    if source == "bandcamp":
+        return "/album/" in path
+    if source == "audius":
+        return "/playlist/" in path
+    if source == "bandlab":
+        return "/albums/" in path or "/album/" in path
+    return False
+
+def prune_music_collection_cache():
+    now = time.monotonic()
+    with MUSIC_COLLECTION_CACHE_LOCK:
+        expired = [key for key, item in MUSIC_COLLECTION_CACHE.items() if item.get("expires", 0) <= now]
+        for key in expired:
+            MUSIC_COLLECTION_CACHE.pop(key, None)
+
+def cache_music_collection(source_url, source, title, artist, thumbnail, tracks, collection_type):
+    prune_music_collection_cache()
+    token = secrets.token_urlsafe(24)
+    entry = {
+        "source_url": source_url,
+        "source": source,
+        "title": title,
+        "artist": artist,
+        "thumbnail": thumbnail,
+        "tracks": tracks,
+        "track_count": len(tracks),
+        "collection_type": collection_type,
+        "expires": time.monotonic() + MUSIC_COLLECTION_CACHE_TTL,
+    }
+    with MUSIC_COLLECTION_CACHE_LOCK:
+        MUSIC_COLLECTION_CACHE[token] = entry
+    return token
+
+def get_music_collection(token):
+    prune_music_collection_cache()
+    with MUSIC_COLLECTION_CACHE_LOCK:
+        item = MUSIC_COLLECTION_CACHE.get(token)
+        return dict(item) if item else None
+
+def music_track_from_entry(entry, index):
+    entry = entry or {}
+    title = str(entry.get("track") or entry.get("title") or "").strip()
+    if not title or title.upper() == "NA":
+        title = f"Faixa {index}"
+    artist = str(
+        entry.get("artist") or entry.get("uploader") or entry.get("creator")
+        or entry.get("channel") or ""
+    ).strip()
+    duration = entry.get("duration")
+    try:
+        duration = float(duration) if duration is not None else None
+    except (TypeError, ValueError):
+        duration = None
+    return {
+        "index": index,
+        "id": str(entry.get("id") or ""),
+        "title": title,
+        "artist": artist,
+        "duration": duration,
+    }
+
+def collection_type_for(source_url, source, info):
+    path = urlparse(source_url).path.lower()
+    if source in {"bandcamp", "bandlab"} and ("/album/" in path or "/albums/" in path):
+        return "album"
+    if str((info or {}).get("album") or "").strip():
+        return "album"
+    return "playlist"
+
+def extract_music_collection(source_url, source):
+    flat_options = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": False,
+        "skip_download": True,
+        "extract_flat": "in_playlist",
+        "ignoreerrors": True,
+        "socket_timeout": 25,
+        "http_headers": {"User-Agent": "Mozilla/5.0"},
+    }
+    with YoutubeDL(flat_options) as extractor:
+        info = extractor.extract_info(source_url, download=False)
+    if not isinstance(info, dict):
+        return None
+
+    raw_entries = [item for item in (info.get("entries") or []) if isinstance(item, dict)]
+    if len(raw_entries) <= 1:
+        return None
+
+    # SoundCloud e Audius costumam omitir os títulos no modo flat. Nesses
+    # casos resolvemos a metadata da playlist sem baixar os arquivos.
+    missing_titles = any(
+        not str(item.get("track") or item.get("title") or "").strip()
+        or str(item.get("track") or item.get("title") or "").strip().upper() == "NA"
+        for item in raw_entries
+    )
+    if missing_titles and source in {"soundcloud", "audius"}:
+        full_options = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": False,
+            "skip_download": True,
+            "ignoreerrors": True,
+            "ignore_no_formats_error": True,
+            "socket_timeout": 25,
+            "http_headers": {"User-Agent": "Mozilla/5.0"},
+        }
+        try:
+            with YoutubeDL(full_options) as extractor:
+                full_info = extractor.extract_info(source_url, download=False)
+            full_entries = [item for item in ((full_info or {}).get("entries") or []) if isinstance(item, dict)]
+            if full_entries:
+                raw_entries = full_entries
+                info = full_info or info
+        except Exception as error:
+            print(f"Falha ao completar metadata de playlist {source}: {type(error).__name__}: {error}")
+
+    tracks = [music_track_from_entry(entry, index) for index, entry in enumerate(raw_entries, start=1)]
+    if len(tracks) <= 1:
+        return None
+
+    title = str(info.get("title") or info.get("playlist_title") or "Playlist").strip() or "Playlist"
+    artist = str(
+        info.get("artist") or info.get("uploader") or info.get("creator")
+        or info.get("channel") or ""
+    ).strip()
+    thumbnail = best_thumbnail_url(info, raw_entries[0] if raw_entries else None)
+    collection_type = collection_type_for(source_url, source, info)
+    collection_id = cache_music_collection(
+        source_url, source, title, artist, thumbnail, tracks, collection_type
+    )
+    return {
+        "status": "ready",
+        "source": source,
+        "type": "music_collection",
+        "url": source_url,
+        "title": title,
+        "artist": artist,
+        "thumbnail": thumbnail,
+        "collection_type": collection_type,
+        "collection_id": collection_id,
+        "track_count": len(tracks),
+        "tracks": tracks,
+        "media_count": len(tracks),
+    }
+
+def extract_music_content(source_url):
+    parsed = urlparse(source_url)
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    source = detect_music_source(host)
+    if not source:
+        return None, "Esta área aceita SoundCloud, Bandcamp, Audius, BandLab e playlists do YouTube."
+    if source == "youtube" and not is_youtube_playlist_url(source_url):
+        return None, "No YouTube, use Músicas para playlists. Para um vídeo individual, use Vídeo para MP3."
+
+    if looks_like_music_collection_url(source_url, source):
+        try:
+            collection = extract_music_collection(source_url, source)
+            if collection:
+                return collection, None
+        except Exception as error:
+            print(f"Falha ao analisar coleção de músicas {source}: {type(error).__name__}: {error}")
+            if source == "youtube":
+                return None, "Não foi possível ler esta playlist do YouTube agora."
+
+        if source == "youtube":
+            return None, "Não encontramos uma playlist com músicas disponíveis neste link."
+
+    media, error = extract_media(source_url)
+    if error:
+        return None, error
+    items = media.get("items") if isinstance(media, dict) else None
+    candidates = items if isinstance(items, list) and items else [media]
+    audio = next((item for item in candidates if isinstance(item, dict) and item.get("type") == "audio"), None)
+    if not audio:
+        return None, "Não encontramos uma faixa de áudio disponível neste link."
+    return media, None
+
+def cleanup_music_jobs():
+    now = time.monotonic()
+    expired_paths = []
+    with MUSIC_JOBS_LOCK:
+        expired = [key for key, item in MUSIC_JOBS.items() if item.get("expires", 0) <= now]
+        for key in expired:
+            item = MUSIC_JOBS.pop(key, None) or {}
+            if item.get("work_dir"):
+                expired_paths.append(item["work_dir"])
+    for path in expired_paths:
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+        except Exception:
+            pass
+
+def set_music_job(job_id, **updates):
+    with MUSIC_JOBS_LOCK:
+        job = MUSIC_JOBS.get(job_id)
+        if not job:
+            return
+        job.update(updates)
+        job["expires"] = time.monotonic() + MUSIC_JOB_TTL
+
+def get_music_job(job_id):
+    cleanup_music_jobs()
+    with MUSIC_JOBS_LOCK:
+        job = MUSIC_JOBS.get(job_id)
+        return dict(job) if job else None
+
+def prepare_music_zip_job(job_id, collection, selected_items):
+    with MUSIC_JOB_SEMAPHORE:
+        work_dir = Path(RUNTIME_CACHE_DIR) / "music-jobs" / job_id
+        folder_name = safe_filename(collection.get("title") or "Músicas") or "Músicas"
+        output_dir = work_dir / folder_name
+        zip_path = work_dir / f"{folder_name}.zip"
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            set_music_job(job_id, status="working", message="Baixando e convertendo as músicas…", work_dir=str(work_dir))
+
+            playlist_items = ",".join(str(value) for value in selected_items)
+            output_template = str(output_dir / "%(playlist_index)02d - %(title)s.%(ext)s")
+            command = [
+                sys.executable, "-m", "yt_dlp",
+                "--quiet", "--no-warnings", "--no-progress",
+                "--ignore-errors",
+                "--playlist-items", playlist_items,
+                "--extract-audio", "--audio-format", "mp3", "--audio-quality", "192K",
+                "--windows-filenames", "--trim-filenames", "120",
+                "-o", output_template,
+                collection["source_url"],
+            ]
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=2 * 60 * 60,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            mp3_files = sorted(path for path in output_dir.rglob("*.mp3") if path.is_file())
+            if not mp3_files:
+                detail = (result.stderr or result.stdout or "").strip()
+                if detail:
+                    print(f"Falha no pacote de músicas: {detail[-1800:]}")
+                raise RuntimeError("Nenhuma música pôde ser preparada.")
+
+            set_music_job(job_id, message="Organizando as músicas em um arquivo ZIP…")
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
+                for music_file in mp3_files:
+                    archive.write(music_file, arcname=str(music_file.relative_to(work_dir)))
+
+            set_music_job(
+                job_id, status="ready", message="ZIP pronto para baixar.",
+                zip_path=str(zip_path), filename=f"{folder_name}.zip",
+                file_count=len(mp3_files),
+            )
+        except subprocess.TimeoutExpired:
+            set_music_job(job_id, status="error", error="O pacote demorou mais que o limite permitido.", message="Falha ao preparar o ZIP.")
+        except Exception as error:
+            print(f"Falha ao preparar ZIP de músicas: {type(error).__name__}: {error}")
+            set_music_job(job_id, status="error", error=str(error) or "Não foi possível preparar o ZIP.", message="Falha ao preparar o ZIP.")
+
+def start_music_job(collection_id, selected_items):
+    collection = get_music_collection(collection_id)
+    if not collection:
+        return None, "Este álbum ou playlist expirou. Analise o link novamente."
+
+    valid_indices = {track.get("index") for track in collection.get("tracks") or []}
+    normalized = []
+    seen = set()
+    for value in selected_items or []:
+        try:
+            index = int(value)
+        except (TypeError, ValueError):
+            continue
+        if index in valid_indices and index not in seen:
+            normalized.append(index)
+            seen.add(index)
+    normalized.sort()
+    if not normalized:
+        return None, "Selecione pelo menos uma música."
+
+    cleanup_music_jobs()
+    job_id = secrets.token_urlsafe(24)
+    with MUSIC_JOBS_LOCK:
+        MUSIC_JOBS[job_id] = {
+            "status": "queued",
+            "message": "Preparando o pacote de músicas…",
+            "collection_id": collection_id,
+            "selected_count": len(normalized),
+            "expires": time.monotonic() + MUSIC_JOB_TTL,
+        }
+    Thread(target=prepare_music_zip_job, args=(job_id, collection, normalized), daemon=True).start()
+    return job_id, None
+
+
 class WorkerHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.respond(204, {})
@@ -3188,11 +3517,17 @@ class WorkerHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             return self.respond(200, {"status": "online", "service": "SOFT Downloaders worker"})
+        if self.path.startswith("/music-job?"):
+            return self.music_job_status()
+        if self.path.startswith("/music-zip?"):
+            return self.download_music_zip()
         if self.path.startswith("/media?"):
             return self.proxy_media()
         return self.respond(404, {"error": "Rota não encontrada."})
 
     def do_POST(self):
+        if self.path == "/music-job":
+            return self.create_music_job()
         if self.path != "/extract":
             return self.respond(404, {"error": "Rota não encontrada."})
         if WORKER_SECRET and not hmac.compare_digest(
@@ -3202,12 +3537,77 @@ class WorkerHandler(BaseHTTPRequestHandler):
         try:
             size = int(self.headers.get("Content-Length", "0"))
             data = json.loads(self.rfile.read(size) or b"{}")
-            media, error = extract_media(str(data.get("url", "")).strip())
+            source_url = str(data.get("url", "")).strip()
+            mode = str(data.get("mode", "")).strip().lower()
+            if mode == "music":
+                media, error = extract_music_content(source_url)
+            else:
+                media, error = extract_media(source_url)
             if error:
                 return self.respond(422, {"error": error})
-            return self.respond(200, prepare_media_response(media, str(data.get("url", "")).strip()))
-        except Exception:
+            if mode == "music" and media and media.get("type") == "music_collection":
+                return self.respond(200, media)
+            return self.respond(200, prepare_media_response(media, source_url))
+        except Exception as error:
+            print(f"Falha na rota /extract: {type(error).__name__}: {error}")
             return self.respond(422, {"error": "Não foi possível processar esse link agora."})
+
+    def create_music_job(self):
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            data = json.loads(self.rfile.read(size) or b"{}")
+            collection_id = str(data.get("id", "")).strip()
+            selected_items = data.get("items") if isinstance(data.get("items"), list) else []
+            job_id, error = start_music_job(collection_id, selected_items)
+            if error:
+                return self.respond(422, {"error": error})
+            return self.respond(202, {"status": "queued", "job_id": job_id})
+        except Exception:
+            return self.respond(422, {"error": "Não foi possível iniciar o pacote de músicas."})
+
+    def music_job_status(self):
+        query = parse_qs(urlparse(self.path).query)
+        job_id = query.get("id", [""])[0]
+        job = get_music_job(job_id) if job_id else None
+        if not job:
+            return self.respond(404, {"error": "Pacote não encontrado ou expirado."})
+        payload = {
+            "status": job.get("status", "queued"),
+            "message": job.get("message", "Preparando o pacote de músicas…"),
+            "selected_count": job.get("selected_count", 0),
+        }
+        if job.get("status") == "ready":
+            payload["file_count"] = job.get("file_count", 0)
+        if job.get("status") == "error":
+            payload["error"] = job.get("error") or "Não foi possível preparar o ZIP."
+        return self.respond(200, payload)
+
+    def download_music_zip(self):
+        query = parse_qs(urlparse(self.path).query)
+        job_id = query.get("id", [""])[0]
+        job = get_music_job(job_id) if job_id else None
+        if not job:
+            return self.respond(404, {"error": "Pacote não encontrado ou expirado."})
+        if job.get("status") != "ready":
+            return self.respond(409, {"error": "O pacote ainda está sendo preparado."})
+        zip_path = Path(job.get("zip_path") or "")
+        if not zip_path.is_file():
+            return self.respond(410, {"error": "O arquivo expirou. Prepare o pacote novamente."})
+
+        origin = self.headers.get("Origin")
+        self.send_response(200)
+        if origin in ALLOWED_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Length", str(zip_path.stat().st_size))
+        self.send_header("Content-Disposition", content_disposition(job.get("filename") or "musicas.zip"))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            with zip_path.open("rb") as source:
+                shutil.copyfileobj(source, self.wfile, length=1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def respond(self, status, payload):
         origin = self.headers.get("Origin")

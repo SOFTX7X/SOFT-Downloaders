@@ -72,20 +72,20 @@
         <div class="tool-panel" id="musicToolPanel" role="tabpanel" aria-labelledby="musicTab" hidden>
           <p class="eyebrow">MÚSICAS</p>
           <h1>Baixe suas músicas.</h1>
-          <p class="hero-copy">Cole o link de uma faixa pública compatível para ouvir a prévia e baixar o áudio.</p>
+          <p class="hero-copy">Cole o link de uma faixa, álbum ou playlist pública compatível para ouvir, selecionar e baixar suas músicas.</p>
 
           <div class="media-types" aria-label="Plataformas de música">
-            <span>SoundCloud</span><span>Bandcamp</span><span>Audius</span><span>BandLab</span>
+            <span>SoundCloud</span><span>Bandcamp</span><span>Audius</span><span>BandLab</span><span>YouTube (Playlists)</span>
           </div>
 
           <form class="download-form" id="musicForm" novalidate>
             <label class="sr-only" for="musicUrl">Cole o link da música</label>
-            <input id="musicUrl" name="musicUrl" type="url" inputmode="url" autocomplete="url" placeholder="Cole aqui o link da música" required />
+            <input id="musicUrl" name="musicUrl" type="url" inputmode="url" autocomplete="url" placeholder="Cole aqui o link da música, álbum ou playlist" required />
             <button type="button" class="clear-button" id="musicClearButton" aria-label="Limpar link" hidden>×</button>
             <button type="button" class="paste-button" id="musicPasteButton">Colar</button>
             <button type="submit" class="download-button">Analisar</button>
           </form>
-          <p class="form-note" id="musicFormNote">Compatível com SoundCloud, Bandcamp, Audius, BandLab e links diretos de áudio.</p>
+          <p class="form-note" id="musicFormNote">Compatível com faixas, álbuns e playlists públicas de SoundCloud, Bandcamp, Audius, BandLab e playlists do YouTube.</p>
         </div>
 
         <div class="tool-panel" id="thumbnailToolPanel" role="tabpanel" aria-labelledby="thumbnailTab" hidden>

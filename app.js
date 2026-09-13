@@ -37,10 +37,17 @@ const downloadStatus = document.querySelector('#downloadStatus');
 
 const DEFAULT_NOTE = 'Compatível com fotos e vídeos públicos das plataformas acima e links diretos de mídia.';
 const DEFAULT_MP3_NOTE = 'Converte vídeos públicos compatíveis das plataformas acima para MP3 em 192 kbps.';
-const DEFAULT_MUSIC_NOTE = 'Compatível com SoundCloud, Bandcamp, Audius, BandLab e links diretos de áudio.';
+const DEFAULT_MUSIC_NOTE = 'Compatível com faixas, álbuns e playlists públicas de SoundCloud, Bandcamp, Audius, BandLab e playlists do YouTube.';
 const DEFAULT_THUMBNAIL_NOTE = 'Disponível para YouTube, Twitch, Kick e Dailymotion.';
 const THUMBNAIL_SOURCES = new Set(['youtube', 'twitch', 'kick', 'dailymotion']);
 const MUSIC_SOURCES = new Set(['soundcloud', 'bandcamp', 'audius', 'bandlab']);
+const MUSIC_COLLECTION_SOURCE_NAMES = {
+  youtube: 'YouTube',
+  soundcloud: 'SoundCloud',
+  bandcamp: 'Bandcamp',
+  audius: 'Audius',
+  bandlab: 'BandLab',
+};
 
 const WORKER_MEDIA_HOST = 'api.forgeaioficial.online';
 let activeResultItems = [];
@@ -196,11 +203,32 @@ function isMusicContent(data) {
   );
 }
 
+function isYoutubePlaylistUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+    const isYoutube = host === 'youtube.com' || host.endsWith('.youtube.com') || host === 'youtu.be';
+    if (!isYoutube) return false;
+    return parsed.pathname.includes('/playlist') || Boolean(parsed.searchParams.get('list'));
+  } catch {
+    return false;
+  }
+}
+
+function isMusicInputSupported(data, rawUrl) {
+  return isMusicContent(data) || (data?.source === 'youtube' && isYoutubePlaylistUrl(rawUrl));
+}
+
 downloadLink.addEventListener('click', async (event) => {
   event.preventDefault();
 
   if (downloadLink.dataset.mode === 'all') {
     await downloadAllMedia(activeResultItems, downloadLink);
+    return;
+  }
+
+  if (downloadLink.dataset.mode === 'music-collection') {
+    await downloadMusicCollection(downloadLink);
     return;
   }
 
@@ -341,10 +369,10 @@ mp3Form.addEventListener('submit', async (event) => {
 musicForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const rawUrl = musicInput.value.trim();
-  if (!rawUrl) return showMusicFormError('Cole um link de música para analisar.');
+  if (!rawUrl) return showMusicFormError('Cole um link de música, álbum ou playlist para analisar.');
 
   musicInput.blur();
-  openResultScreen('Analisando a música…');
+  openResultScreen('Analisando música, álbum ou playlist…');
   musicNote.className = 'form-note';
   musicNote.textContent = DEFAULT_MUSIC_NOTE;
 
@@ -361,17 +389,17 @@ musicForm.addEventListener('submit', async (event) => {
     return showResultError(error.message || 'Não foi possível analisar o link.');
   }
 
-  if (!isMusicContent(data)) {
-    return showResultError('Esta área aceita SoundCloud, Bandcamp, Audius, BandLab e links diretos de áudio.');
+  if (!isMusicInputSupported(data, rawUrl)) {
+    return showResultError('Esta área aceita SoundCloud, Bandcamp, Audius, BandLab, playlists do YouTube e links diretos de áudio.');
   }
 
   if (data.status === 'pending') {
-    setResultLoading(`Lendo faixa do ${data.source}…`);
+    setResultLoading(data.source === 'youtube' ? 'Lendo playlist do YouTube…' : `Lendo música do ${data.source}…`);
     try {
       const extraction = await fetch('/api/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: rawUrl }),
+        body: JSON.stringify({ url: rawUrl, mode: 'music' }),
       });
       data = await extraction.json();
       if (!extraction.ok) throw new Error(data.error || 'Não foi possível extrair a música.');
@@ -382,6 +410,14 @@ musicForm.addEventListener('submit', async (event) => {
 
   if (data.status !== 'ready') {
     return showResultError(data.message || 'Esta música ainda não é compatível.');
+  }
+
+  if (data.type === 'music_collection' && Array.isArray(data.tracks) && data.tracks.length) {
+    renderMusicCollection(data);
+    resultLoading.hidden = true;
+    resultError.hidden = true;
+    result.hidden = false;
+    return;
   }
 
   const items = Array.isArray(data.items) && data.items.length ? data.items : [data];
@@ -476,7 +512,7 @@ function closeResultScreen() {
 
 function resetResult() {
   result.hidden = true;
-  result.classList.remove('is-carousel', 'is-mp3', 'is-thumbnail');
+  result.classList.remove('is-carousel', 'is-mp3', 'is-thumbnail', 'is-music-collection');
   resultStage.classList.remove('carousel-mode');
   resultLoading.hidden = true;
   resultError.hidden = true;
@@ -488,9 +524,13 @@ function resetResult() {
   downloadLink.hidden = true;
   downloadLink.href = '#';
   downloadLink.textContent = 'BAIXAR ARQUIVO';
+  downloadLink.classList.remove('is-disabled');
+  downloadLink.removeAttribute('aria-disabled');
+  downloadLink.disabled = false;
   delete downloadLink.dataset.mode;
   delete downloadLink.dataset.mediaUrl;
   delete downloadLink.dataset.filename;
+  delete downloadLink.dataset.collectionId;
   if (downloadStatus) {
     downloadStatus.hidden = true;
     downloadStatus.textContent = '';
@@ -726,6 +766,126 @@ function renderMusicResult(data) {
   renderMedia(data);
   downloadLink.textContent = 'BAIXAR MÚSICA';
   downloadLink.dataset.mode = 'music';
+}
+
+function renderMusicCollection(data) {
+  result.classList.add('is-music-collection');
+  result.classList.remove('is-carousel', 'is-mp3', 'is-thumbnail');
+  resultStage.classList.remove('carousel-mode');
+  preview.dataset.type = 'music-collection';
+  carouselItems.hidden = true;
+  carouselItems.replaceChildren();
+
+  const card = document.createElement('section');
+  card.className = 'music-collection-card';
+
+  const header = document.createElement('div');
+  header.className = 'music-collection-header';
+
+  const cover = document.createElement('div');
+  cover.className = 'music-collection-cover';
+  if (data.thumbnail) {
+    const image = document.createElement('img');
+    image.src = data.thumbnail;
+    image.alt = '';
+    image.addEventListener('error', () => {
+      image.remove();
+      cover.classList.add('is-fallback');
+    });
+    cover.append(image);
+  } else {
+    cover.classList.add('is-fallback');
+  }
+
+  const info = document.createElement('div');
+  info.className = 'music-collection-info';
+  const type = document.createElement('span');
+  type.className = 'music-collection-type';
+  type.textContent = data.collection_type === 'album' ? 'ÁLBUM' : 'PLAYLIST';
+  const title = document.createElement('h2');
+  title.textContent = data.title || (data.collection_type === 'album' ? 'Álbum' : 'Playlist');
+  const meta = document.createElement('p');
+  const sourceName = MUSIC_COLLECTION_SOURCE_NAMES[data.source] || 'Músicas';
+  const count = Number(data.track_count || data.tracks.length);
+  meta.textContent = [data.artist, sourceName, `${count} ${count === 1 ? 'faixa' : 'faixas'}`].filter(Boolean).join(' • ');
+  info.append(type, title, meta);
+  header.append(cover, info);
+
+  const controls = document.createElement('div');
+  controls.className = 'music-selection-controls';
+  const selectAllLabel = document.createElement('label');
+  selectAllLabel.className = 'music-select-all';
+  const selectAll = document.createElement('input');
+  selectAll.type = 'checkbox';
+  selectAll.checked = true;
+  const selectAllText = document.createElement('span');
+  selectAllText.textContent = 'Selecionar todas';
+  selectAllLabel.append(selectAll, selectAllText);
+  const counter = document.createElement('span');
+  counter.className = 'music-selection-count';
+  controls.append(selectAllLabel, counter);
+
+  const list = document.createElement('div');
+  list.className = 'music-track-list';
+
+  const checkboxes = [];
+  data.tracks.forEach((track, position) => {
+    const row = document.createElement('label');
+    row.className = 'music-track-row';
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = true;
+    checkbox.value = String(track.index || position + 1);
+    checkbox.className = 'music-track-check';
+    checkboxes.push(checkbox);
+
+    const index = document.createElement('span');
+    index.className = 'music-track-index';
+    index.textContent = String(track.index || position + 1).padStart(2, '0');
+
+    const text = document.createElement('span');
+    text.className = 'music-track-text';
+    const trackTitle = document.createElement('strong');
+    trackTitle.textContent = track.title || `Faixa ${position + 1}`;
+    const trackMeta = document.createElement('small');
+    const details = [];
+    if (track.artist) details.push(track.artist);
+    if (track.duration) details.push(formatAudioTime(track.duration));
+    trackMeta.textContent = details.join(' • ');
+    if (!trackMeta.textContent) trackMeta.hidden = true;
+    text.append(trackTitle, trackMeta);
+
+    row.append(checkbox, index, text);
+    list.append(row);
+  });
+
+  const syncSelection = () => {
+    const selected = checkboxes.filter((checkbox) => checkbox.checked).length;
+    selectAll.checked = selected === checkboxes.length && checkboxes.length > 0;
+    selectAll.indeterminate = selected > 0 && selected < checkboxes.length;
+    counter.textContent = `${selected} de ${checkboxes.length} selecionadas`;
+    downloadLink.classList.toggle('is-disabled', selected === 0);
+    downloadLink.setAttribute('aria-disabled', String(selected === 0));
+  };
+
+  selectAll.addEventListener('change', () => {
+    checkboxes.forEach((checkbox) => { checkbox.checked = selectAll.checked; });
+    syncSelection();
+  });
+  checkboxes.forEach((checkbox) => checkbox.addEventListener('change', syncSelection));
+
+  card.append(header, controls, list);
+  preview.replaceChildren(card);
+  syncSelection();
+
+  downloadLink.hidden = false;
+  downloadLink.href = '#';
+  downloadLink.textContent = 'BAIXAR SELECIONADAS';
+  downloadLink.dataset.mode = 'music-collection';
+  downloadLink.dataset.collectionId = data.collection_id || '';
+  delete downloadLink.dataset.mediaUrl;
+  delete downloadLink.dataset.filename;
 }
 
 function renderMp3Result(data) {
@@ -988,6 +1148,62 @@ async function downloadAllMedia(items, button) {
     window.setTimeout(hideDownloadStatus, 5000);
   } catch (error) {
     showDownloadStatus(error.message || 'Não foi possível iniciar os downloads.', true);
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
+}
+
+async function downloadMusicCollection(button) {
+  const collectionId = button.dataset.collectionId;
+  if (!collectionId) return showDownloadStatus('Analise o álbum ou playlist novamente.', true);
+
+  const selected = [...preview.querySelectorAll('.music-track-check:checked')]
+    .map((checkbox) => Number(checkbox.value))
+    .filter((value) => Number.isInteger(value) && value > 0);
+  if (!selected.length) return showDownloadStatus('Selecione pelo menos uma música.', true);
+
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = 'PREPARANDO ZIP…';
+  showDownloadStatus(`Preparando ${selected.length} ${selected.length === 1 ? 'música' : 'músicas'}…`);
+
+  try {
+    const response = await fetch(`https://${WORKER_MEDIA_HOST}/music-job`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: collectionId, items: selected }),
+    });
+    const job = await response.json();
+    if (!response.ok || !job.job_id) throw new Error(job.error || 'Não foi possível iniciar o pacote de músicas.');
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 2 * 60 * 60 * 1000) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1800));
+      const statusResponse = await fetch(`https://${WORKER_MEDIA_HOST}/music-job?id=${encodeURIComponent(job.job_id)}`, { cache: 'no-store' });
+      const status = await statusResponse.json();
+      if (!statusResponse.ok) throw new Error(status.error || 'Não foi possível acompanhar o download.');
+
+      if (status.status === 'ready') {
+        showDownloadStatus('ZIP pronto. Enviando o download ao navegador…');
+        const transferFrame = document.createElement('iframe');
+        transferFrame.hidden = true;
+        transferFrame.setAttribute('aria-hidden', 'true');
+        transferFrame.src = `https://${WORKER_MEDIA_HOST}/music-zip?id=${encodeURIComponent(job.job_id)}`;
+        document.body.append(transferFrame);
+        window.setTimeout(() => transferFrame.remove(), 2 * 60 * 60 * 1000);
+        window.setTimeout(() => {
+          showDownloadStatus('Download enviado ao navegador.');
+          window.setTimeout(hideDownloadStatus, 5000);
+        }, 2500);
+        return;
+      }
+      if (status.status === 'error') throw new Error(status.error || 'Não foi possível preparar o ZIP.');
+      showDownloadStatus(status.message || 'Baixando e organizando as músicas…');
+    }
+    throw new Error('O pacote demorou mais que o esperado. Tente novamente com menos músicas.');
+  } catch (error) {
+    showDownloadStatus(error.message || 'Não foi possível preparar o ZIP.', true);
   } finally {
     button.disabled = false;
     button.textContent = originalLabel;
