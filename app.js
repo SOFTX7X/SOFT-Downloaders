@@ -35,8 +35,8 @@ const downloadLink = document.querySelector('#downloadLink');
 const carouselItems = document.querySelector('#carouselItems');
 const downloadStatus = document.querySelector('#downloadStatus');
 
-const DEFAULT_NOTE = 'Aceita links diretos para arquivos públicos de foto ou vídeo: MP4, WebM, JPG, PNG e WebP.';
-const DEFAULT_MP3_NOTE = 'A conversão é feita somente quando você usa esta área.';
+const DEFAULT_NOTE = 'Compatível com fotos e vídeos públicos das plataformas acima e links diretos de mídia.';
+const DEFAULT_MP3_NOTE = 'Converte vídeos públicos compatíveis das plataformas acima para MP3 em 192 kbps.';
 const DEFAULT_MUSIC_NOTE = 'Compatível com SoundCloud, Bandcamp, Audius, BandLab e links diretos de áudio.';
 const DEFAULT_THUMBNAIL_NOTE = 'Disponível para YouTube, Twitch, Kick e Dailymotion.';
 const THUMBNAIL_SOURCES = new Set(['youtube', 'twitch', 'kick', 'dailymotion']);
