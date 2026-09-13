@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 from yt_dlp import YoutubeDL
 
 ALLOWED_HOSTS = (
-    "instagram.com", "tiktok.com", "youtube.com", "youtu.be", "facebook.com", "fb.watch", "x.com", "twitter.com", "pinterest.com", "pin.it", "reddit.com", "redd.it", "kwai.com", "kwai-video.com", "kw.ai", "dailymotion.com", "dai.ly", "soundcloud.com", "linkedin.com", "twitch.tv", "kick.com",
+    "instagram.com", "tiktok.com", "youtube.com", "youtu.be", "facebook.com", "fb.watch", "x.com", "twitter.com", "pinterest.com", "pin.it", "reddit.com", "redd.it", "kwai.com", "kwai-video.com", "kw.ai", "dailymotion.com", "dai.ly", "soundcloud.com", "bandcamp.com", "audius.co", "bandlab.com", "linkedin.com", "twitch.tv", "kick.com",
 )
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif", "avif"}
 AUDIO_EXTENSIONS = {"mp3", "m4a", "wav", "ogg", "opus", "aac"}
@@ -132,6 +132,12 @@ def detect_source(host):
         return "dailymotion"
     if host == "soundcloud.com" or host.endswith(".soundcloud.com"):
         return "soundcloud"
+    if host == "bandcamp.com" or host.endswith(".bandcamp.com"):
+        return "bandcamp"
+    if host == "audius.co" or host.endswith(".audius.co"):
+        return "audius"
+    if host == "bandlab.com" or host.endswith(".bandlab.com"):
+        return "bandlab"
     if host == "linkedin.com" or host.endswith(".linkedin.com"):
         return "linkedin"
     if host == "twitch.tv" or host.endswith(".twitch.tv"):
@@ -162,12 +168,22 @@ def normalize_media(info, host):
         return None
     extension = str(info.get("ext", "mp4")).lower()
     title = info.get("title") or "Mídia pronta para baixar"
-    return {
-        "status": "ready", "source": detect_source(host), "type": media_type(info, extension),
+    kind = media_type(info, extension)
+    payload = {
+        "status": "ready", "source": detect_source(host), "type": kind,
         "url": info["url"], "title": title, "thumbnail": info.get("thumbnail"),
         "filename": f"{safe_filename(title)}.{extension}", "media_count": media_count,
         "http_headers": info.get("http_headers") or {},
     }
+    if kind == "audio":
+        track_title = str(info.get("track") or title).strip()
+        artist = str(info.get("artist") or info.get("uploader") or info.get("creator") or "").strip()
+        payload.update({
+            "track_title": track_title,
+            "artist": artist,
+            "duration": info.get("duration"),
+        })
+    return payload
 
 
 def extract_instagram_embed(source_url):

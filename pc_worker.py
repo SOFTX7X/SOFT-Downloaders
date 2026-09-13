@@ -116,6 +116,9 @@ def default_proxy_headers(source):
         "vimeo": "https://vimeo.com/",
         "dailymotion": "https://www.dailymotion.com/",
         "soundcloud": "https://soundcloud.com/",
+        "bandcamp": "https://bandcamp.com/",
+        "audius": "https://audius.co/",
+        "bandlab": "https://www.bandlab.com/",
         "linkedin": "https://www.linkedin.com/",
         "twitch": "https://www.twitch.tv/",
         "kick": "https://kick.com/",
@@ -280,7 +283,7 @@ def prepare_media_response(media, source_url):
             item["url"],
             item.get("http_headers"),
             item_source,
-            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "linkedin", "twitch", "kick") else None,
+            page_url=source_url if item_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "bandcamp", "audius", "bandlab", "linkedin", "twitch", "kick") else None,
             filename=item.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -319,7 +322,7 @@ def prepare_media_response(media, source_url):
             media["url"],
             media.get("http_headers"),
             media_source,
-            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "linkedin", "twitch", "kick") else None,
+            page_url=source_url if media_source in ("tiktok", "youtube", "instagram", "facebook", "twitter", "pinterest", "reddit", "kwai", "dailymotion", "soundcloud", "bandcamp", "audius", "bandlab", "linkedin", "twitch", "kick") else None,
             filename=media.get("filename"),
             tiktok_info=tiktok_info if use_tiktok_bundle else None,
             tiktok_cookiefile=tiktok_cookiefile if use_tiktok_bundle else None,
@@ -581,6 +584,9 @@ def extract_media(source_url):
     is_vimeo = host == "vimeo.com" or host.endswith(".vimeo.com")
     is_dailymotion = host == "dailymotion.com" or host.endswith(".dailymotion.com") or host == "dai.ly"
     is_soundcloud = host == "soundcloud.com" or host.endswith(".soundcloud.com")
+    is_bandcamp = host == "bandcamp.com" or host.endswith(".bandcamp.com")
+    is_audius = host == "audius.co" or host.endswith(".audius.co")
+    is_bandlab = host == "bandlab.com" or host.endswith(".bandlab.com")
     is_linkedin = host == "linkedin.com" or host.endswith(".linkedin.com")
     is_twitch = host == "twitch.tv" or host.endswith(".twitch.tv")
     is_kick = host == "kick.com" or host.endswith(".kick.com")
@@ -703,6 +709,12 @@ def extract_media(source_url):
                 print(f"Falha na análise do Dailymotion: {type(error).__name__}: {error}")
             elif is_soundcloud:
                 print(f"Falha na análise do SoundCloud: {type(error).__name__}: {error}")
+            elif is_bandcamp:
+                print(f"Falha na análise do Bandcamp: {type(error).__name__}: {error}")
+            elif is_audius:
+                print(f"Falha na análise do Audius: {type(error).__name__}: {error}")
+            elif is_bandlab:
+                print(f"Falha na análise do BandLab: {type(error).__name__}: {error}")
             elif is_twitch:
                 print(f"Falha na análise da Twitch: {type(error).__name__}: {error}")
             elif is_kick:

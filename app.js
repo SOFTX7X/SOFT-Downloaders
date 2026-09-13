@@ -438,7 +438,13 @@ function createAudioPreview(data) {
 
   const artist = document.createElement('span');
   artist.className = 'audio-artist';
-  artist.textContent = data.artist || (data.source === 'soundcloud' ? 'SoundCloud' : 'Áudio');
+  const audioSourceNames = {
+    soundcloud: 'SoundCloud',
+    bandcamp: 'Bandcamp',
+    audius: 'Audius',
+    bandlab: 'BandLab',
+  };
+  artist.textContent = data.artist || audioSourceNames[data.source] || 'Áudio';
 
   const player = document.createElement('div');
   player.className = 'audio-player';

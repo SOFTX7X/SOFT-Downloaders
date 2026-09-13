@@ -62,6 +62,15 @@ function identifySource(url) {
   if (host === 'soundcloud.com' || host.endsWith('.soundcloud.com')) {
     return pending('soundcloud', 'Faixa pública do SoundCloud identificada.');
   }
+  if (host === 'bandcamp.com' || host.endsWith('.bandcamp.com')) {
+    return pending('bandcamp', 'Faixa pública do Bandcamp identificada.');
+  }
+  if (host === 'audius.co' || host.endsWith('.audius.co')) {
+    return pending('audius', 'Faixa pública do Audius identificada.');
+  }
+  if (host === 'bandlab.com' || host.endsWith('.bandlab.com')) {
+    return pending('bandlab', 'Faixa pública do BandLab identificada.');
+  }
   if (host === 'linkedin.com' || host.endsWith('.linkedin.com')) {
     return pending('linkedin', 'Publicação pública do LinkedIn identificada.');
   }
