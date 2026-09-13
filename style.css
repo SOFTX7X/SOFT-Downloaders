@@ -141,3 +141,112 @@ body.result-screen-open{overflow:hidden}
 @media (max-width:640px){
   .result-preview[data-type="thumbnail"]{width:100%;max-width:100%;height:auto;aspect-ratio:16/9}
 }
+
+/* Aplicativo Android */
+.app-download{
+  max-width:none;
+  padding:88px max(28px,calc((100% - 1068px)/2));
+  border-top:1px solid var(--line);
+  background:#fff;
+}
+.app-download-inner{
+  display:grid;
+  grid-template-columns:minmax(0,1.4fr) minmax(250px,.6fr);
+  align-items:center;
+  gap:64px;
+}
+.app-download-copy{max-width:690px}
+.app-download-description{
+  max-width:650px;
+  margin:20px 0 24px;
+  color:var(--muted);
+  font-size:17px;
+  line-height:1.65;
+}
+.app-download-meta{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin:0 0 26px;
+}
+.app-download-meta span{
+  padding:8px 12px;
+  border:1px solid var(--line);
+  border-radius:999px;
+  color:var(--ink);
+  background:#fff;
+  font-size:12px;
+  font-weight:700;
+}
+.app-download-button{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:46px;
+  padding:0 22px;
+  border-radius:8px;
+  background:var(--violet);
+  color:#fff;
+  text-decoration:none;
+  font-size:14px;
+  font-weight:800;
+  box-shadow:0 10px 24px rgba(116,68,255,.18);
+  transition:transform .16s ease,filter .16s ease;
+}
+.app-download-button:hover{filter:brightness(.96);transform:translateY(-1px)}
+.app-download-button:focus-visible{
+  outline:3px solid rgba(116,68,255,.25);
+  outline-offset:3px;
+}
+.app-download-store-note{
+  max-width:650px;
+  margin:18px 0 0;
+  padding:14px 16px;
+  border-left:3px solid var(--violet);
+  background:var(--surface);
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.6;
+}
+.app-download-store-note strong{color:var(--ink)}
+.app-download-visual{display:grid;place-items:center}
+.app-icon-card{
+  width:min(250px,100%);
+  aspect-ratio:1/1;
+  display:grid;
+  place-items:center;
+  align-content:center;
+  gap:12px;
+  padding:30px;
+  border:1px solid var(--line);
+  border-radius:22px;
+  background:var(--surface);
+  text-align:center;
+  box-shadow:0 16px 38px rgba(23,33,42,.07);
+}
+.app-icon-card img{
+  width:108px;
+  height:108px;
+  object-fit:contain;
+}
+.app-icon-card strong{
+  color:var(--ink);
+  font:800 17px/1.25 "Manrope",sans-serif;
+  letter-spacing:-.4px;
+}
+.app-icon-card span{
+  color:var(--violet);
+  font-size:12px;
+  font-weight:800;
+  letter-spacing:.7px;
+  text-transform:uppercase;
+}
+@media (max-width:760px){
+  .app-download{padding:66px 20px}
+  .app-download-inner{grid-template-columns:1fr;gap:34px}
+  .app-download-copy{text-align:left}
+  .app-download-visual{display:none}
+  .app-download-button{width:100%}
+  .app-download-description{font-size:16px}
+}
+
