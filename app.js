@@ -6,15 +6,21 @@ const mp3Form = document.querySelector('#mp3Form');
 const mp3Input = document.querySelector('#mp3Url');
 const mp3Note = document.querySelector('#mp3FormNote');
 const mp3ClearButton = document.querySelector('#mp3ClearButton');
+const musicForm = document.querySelector('#musicForm');
+const musicInput = document.querySelector('#musicUrl');
+const musicNote = document.querySelector('#musicFormNote');
+const musicClearButton = document.querySelector('#musicClearButton');
 const thumbnailForm = document.querySelector('#thumbnailForm');
 const thumbnailInput = document.querySelector('#thumbnailUrl');
 const thumbnailNote = document.querySelector('#thumbnailFormNote');
 const thumbnailClearButton = document.querySelector('#thumbnailClearButton');
 const mediaTab = document.querySelector('#mediaTab');
 const mp3Tab = document.querySelector('#mp3Tab');
+const musicTab = document.querySelector('#musicTab');
 const thumbnailTab = document.querySelector('#thumbnailTab');
 const mediaToolPanel = document.querySelector('#mediaToolPanel');
 const mp3ToolPanel = document.querySelector('#mp3ToolPanel');
+const musicToolPanel = document.querySelector('#musicToolPanel');
 const thumbnailToolPanel = document.querySelector('#thumbnailToolPanel');
 const resultScreen = document.querySelector('#resultScreen');
 const resultBack = document.querySelector('#resultBack');
@@ -29,10 +35,12 @@ const downloadLink = document.querySelector('#downloadLink');
 const carouselItems = document.querySelector('#carouselItems');
 const downloadStatus = document.querySelector('#downloadStatus');
 
-const DEFAULT_NOTE = 'Aceita links diretos para arquivos públicos: MP4, WebM, MP3, JPG, PNG e WebP.';
+const DEFAULT_NOTE = 'Aceita links diretos para arquivos públicos de foto ou vídeo: MP4, WebM, JPG, PNG e WebP.';
 const DEFAULT_MP3_NOTE = 'A conversão é feita somente quando você usa esta área.';
+const DEFAULT_MUSIC_NOTE = 'Compatível com SoundCloud, Bandcamp, Audius, BandLab e links diretos de áudio.';
 const DEFAULT_THUMBNAIL_NOTE = 'Disponível para YouTube, Twitch, Kick e Dailymotion.';
 const THUMBNAIL_SOURCES = new Set(['youtube', 'twitch', 'kick', 'dailymotion']);
+const MUSIC_SOURCES = new Set(['soundcloud', 'bandcamp', 'audius', 'bandlab']);
 
 const WORKER_MEDIA_HOST = 'api.forgeaioficial.online';
 let activeResultItems = [];
@@ -53,6 +61,10 @@ function syncMp3ClearButton() {
   if (mp3ClearButton) mp3ClearButton.hidden = !mp3Input.value.trim();
 }
 
+function syncMusicClearButton() {
+  if (musicClearButton) musicClearButton.hidden = !musicInput.value.trim();
+}
+
 function syncThumbnailClearButton() {
   if (thumbnailClearButton) thumbnailClearButton.hidden = !thumbnailInput.value.trim();
 }
@@ -60,25 +72,31 @@ function syncThumbnailClearButton() {
 function setActiveTool(tool) {
   const useMedia = tool === 'media';
   const useMp3 = tool === 'mp3';
+  const useMusic = tool === 'music';
   const useThumbnail = tool === 'thumbnail';
   mediaTab.classList.toggle('is-active', useMedia);
   mp3Tab.classList.toggle('is-active', useMp3);
+  musicTab.classList.toggle('is-active', useMusic);
   thumbnailTab.classList.toggle('is-active', useThumbnail);
   mediaTab.setAttribute('aria-selected', String(useMedia));
   mp3Tab.setAttribute('aria-selected', String(useMp3));
+  musicTab.setAttribute('aria-selected', String(useMusic));
   thumbnailTab.setAttribute('aria-selected', String(useThumbnail));
   mediaToolPanel.hidden = !useMedia;
   mp3ToolPanel.hidden = !useMp3;
+  musicToolPanel.hidden = !useMusic;
   thumbnailToolPanel.hidden = !useThumbnail;
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 }
 
 mediaTab.addEventListener('click', () => setActiveTool('media'));
 mp3Tab.addEventListener('click', () => setActiveTool('mp3'));
+musicTab.addEventListener('click', () => setActiveTool('music'));
 thumbnailTab.addEventListener('click', () => setActiveTool('thumbnail'));
 
 input.addEventListener('input', syncClearButton);
 mp3Input.addEventListener('input', syncMp3ClearButton);
+musicInput.addEventListener('input', syncMusicClearButton);
 thumbnailInput.addEventListener('input', syncThumbnailClearButton);
 
 document.querySelector('#pasteButton').addEventListener('click', async () => {
@@ -98,6 +116,16 @@ document.querySelector('#mp3PasteButton').addEventListener('click', async () => 
     mp3Input.focus();
   } catch {
     mp3Input.focus();
+  }
+});
+
+document.querySelector('#musicPasteButton').addEventListener('click', async () => {
+  try {
+    musicInput.value = await navigator.clipboard.readText();
+    syncMusicClearButton();
+    musicInput.focus();
+  } catch {
+    musicInput.focus();
   }
 });
 
@@ -131,6 +159,16 @@ if (mp3ClearButton) {
   });
 }
 
+if (musicClearButton) {
+  musicClearButton.addEventListener('click', (event) => {
+    event.preventDefault();
+    musicInput.value = '';
+    syncMusicClearButton();
+    musicInput.blur();
+    musicClearButton.blur();
+  });
+}
+
 if (thumbnailClearButton) {
   thumbnailClearButton.addEventListener('click', (event) => {
     event.preventDefault();
@@ -143,12 +181,20 @@ if (thumbnailClearButton) {
 
 syncClearButton();
 syncMp3ClearButton();
+syncMusicClearButton();
 syncThumbnailClearButton();
 
 resultBack.addEventListener('click', closeResultScreen);
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !resultScreen.hidden) closeResultScreen();
 });
+
+function isMusicContent(data) {
+  return Boolean(data) && (
+    MUSIC_SOURCES.has(data.source) ||
+    (data.source === 'direct' && data.type === 'audio')
+  );
+}
 
 downloadLink.addEventListener('click', async (event) => {
   event.preventDefault();
@@ -184,6 +230,10 @@ form.addEventListener('submit', async (event) => {
     if (!response.ok) throw new Error(data.error || 'Não foi possível analisar o link.');
   } catch (error) {
     return showResultError(error.message || 'Não foi possível analisar o link.');
+  }
+
+  if (isMusicContent(data)) {
+    return showResultError('Este link é de música ou áudio. Use a opção Músicas.');
   }
 
   if (data.status === 'pending') {
@@ -248,11 +298,14 @@ mp3Form.addEventListener('submit', async (event) => {
     return showResultError(error.message || 'Não foi possível analisar o link.');
   }
 
+  if (isMusicContent(resolved)) {
+    return showResultError('Este link é de música ou áudio. Use a opção Músicas.');
+  }
   if (resolved.status === 'unsupported') {
     return showResultError(resolved.message || 'Este link não é compatível com a conversão para MP3.');
   }
   if (resolved.status === 'ready' && resolved.type !== 'video') {
-    return showResultError('Esta área aceita links de vídeo. Para fotos ou áudios, use Baixar mídia.');
+    return showResultError('Esta área aceita links de vídeo. Para fotos, use Mídias; para áudio, use Músicas.');
   }
 
   setResultLoading('Preparando o vídeo para MP3…');
@@ -280,6 +333,65 @@ mp3Form.addEventListener('submit', async (event) => {
   }
 
   renderMp3Result(video);
+  resultLoading.hidden = true;
+  resultError.hidden = true;
+  result.hidden = false;
+});
+
+musicForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const rawUrl = musicInput.value.trim();
+  if (!rawUrl) return showMusicFormError('Cole um link de música para analisar.');
+
+  musicInput.blur();
+  openResultScreen('Analisando a música…');
+  musicNote.className = 'form-note';
+  musicNote.textContent = DEFAULT_MUSIC_NOTE;
+
+  let data;
+  try {
+    const response = await fetch('/api/resolve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: rawUrl }),
+    });
+    data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Não foi possível analisar o link.');
+  } catch (error) {
+    return showResultError(error.message || 'Não foi possível analisar o link.');
+  }
+
+  if (!isMusicContent(data)) {
+    return showResultError('Esta área aceita SoundCloud, Bandcamp, Audius, BandLab e links diretos de áudio.');
+  }
+
+  if (data.status === 'pending') {
+    setResultLoading(`Lendo faixa do ${data.source}…`);
+    try {
+      const extraction = await fetch('/api/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: rawUrl }),
+      });
+      data = await extraction.json();
+      if (!extraction.ok) throw new Error(data.error || 'Não foi possível extrair a música.');
+    } catch (error) {
+      return showResultError(error.message || 'Não foi possível extrair a música.');
+    }
+  }
+
+  if (data.status !== 'ready') {
+    return showResultError(data.message || 'Esta música ainda não é compatível.');
+  }
+
+  const items = Array.isArray(data.items) && data.items.length ? data.items : [data];
+  const audio = items.find((item) => mediaTypeForDownload(item) === 'audio');
+  if (!audio) {
+    return showResultError('Não encontramos uma faixa de áudio disponível neste link.');
+  }
+
+  activeResultItems = [audio];
+  renderMusicResult(audio);
   resultLoading.hidden = true;
   resultError.hidden = true;
   result.hidden = false;
@@ -608,6 +720,12 @@ function renderMedia(data) {
   downloadLink.dataset.mode = 'single';
   downloadLink.dataset.mediaUrl = proxyMediaUrl(data.url, data.source, data.proxy_id, true);
   downloadLink.dataset.filename = data.filename || 'soft-download';
+}
+
+function renderMusicResult(data) {
+  renderMedia(data);
+  downloadLink.textContent = 'BAIXAR MÚSICA';
+  downloadLink.dataset.mode = 'music';
 }
 
 function renderMp3Result(data) {
@@ -969,6 +1087,11 @@ function showFormError(message) {
 function showMp3FormError(message) {
   mp3Note.className = 'form-note error';
   mp3Note.textContent = message;
+}
+
+function showMusicFormError(message) {
+  musicNote.className = 'form-note error';
+  musicNote.textContent = message;
 }
 
 function showThumbnailFormError(message) {

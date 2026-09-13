@@ -25,18 +25,19 @@
     <main id="inicio">
       <section class="hero" aria-labelledby="page-title">
         <div class="tool-tabs" role="tablist" aria-label="Ferramentas do SOFT Downloaders">
-          <button class="tool-tab is-active" id="mediaTab" type="button" role="tab" aria-selected="true" aria-controls="mediaToolPanel">Baixar mídia</button>
+          <button class="tool-tab is-active" id="mediaTab" type="button" role="tab" aria-selected="true" aria-controls="mediaToolPanel">Mídias</button>
           <button class="tool-tab" id="mp3Tab" type="button" role="tab" aria-selected="false" aria-controls="mp3ToolPanel">Vídeo para MP3</button>
-          <button class="tool-tab" id="thumbnailTab" type="button" role="tab" aria-selected="false" aria-controls="thumbnailToolPanel">Baixar Thumbnail</button>
+          <button class="tool-tab" id="musicTab" type="button" role="tab" aria-selected="false" aria-controls="musicToolPanel">Músicas</button>
+          <button class="tool-tab" id="thumbnailTab" type="button" role="tab" aria-selected="false" aria-controls="thumbnailToolPanel">Thumbnail</button>
         </div>
 
         <div class="tool-panel" id="mediaToolPanel" role="tabpanel" aria-labelledby="mediaTab">
           <p class="eyebrow">MÍDIA POR LINK</p>
           <h1 id="page-title">Baixe mídias por link.</h1>
-          <p class="hero-copy">Cole o link de uma publicação ou mídia compatível para visualizar a prévia e iniciar o download.</p>
+          <p class="hero-copy">Cole o link de uma publicação com foto ou vídeo para visualizar a prévia e iniciar o download.</p>
 
           <div class="media-types" aria-label="Tipos aceitos">
-            <span>Vídeo</span><span>Imagem</span><span>Áudio</span><span>Link direto</span>
+            <span>Vídeo</span><span>Imagem</span><span>Link direto</span>
           </div>
 
           <form class="download-form" id="downloadForm" novalidate>
@@ -46,7 +47,7 @@
             <button type="button" class="paste-button" id="pasteButton">Colar</button>
             <button type="submit" class="download-button">Analisar</button>
           </form>
-          <p class="form-note" id="formNote">Compatível com links públicos de redes sociais suportadas e arquivos diretos de mídia.</p>
+          <p class="form-note" id="formNote">Compatível com links públicos de redes sociais suportadas e arquivos diretos de foto ou vídeo.</p>
         </div>
 
         <div class="tool-panel" id="mp3ToolPanel" role="tabpanel" aria-labelledby="mp3Tab" hidden>
@@ -66,6 +67,25 @@
             <button type="submit" class="download-button">Gerar MP3</button>
           </form>
           <p class="form-note" id="mp3FormNote">A conversão é feita somente quando você usa esta área.</p>
+        </div>
+
+        <div class="tool-panel" id="musicToolPanel" role="tabpanel" aria-labelledby="musicTab" hidden>
+          <p class="eyebrow">MÚSICAS</p>
+          <h1>Baixe suas músicas.</h1>
+          <p class="hero-copy">Cole o link de uma faixa pública compatível para ouvir a prévia e baixar o áudio.</p>
+
+          <div class="media-types" aria-label="Plataformas de música">
+            <span>SoundCloud</span><span>Bandcamp</span><span>Audius</span><span>BandLab</span>
+          </div>
+
+          <form class="download-form" id="musicForm" novalidate>
+            <label class="sr-only" for="musicUrl">Cole o link da música</label>
+            <input id="musicUrl" name="musicUrl" type="url" inputmode="url" autocomplete="url" placeholder="Cole aqui o link da música" required />
+            <button type="button" class="clear-button" id="musicClearButton" aria-label="Limpar link" hidden>×</button>
+            <button type="button" class="paste-button" id="musicPasteButton">Colar</button>
+            <button type="submit" class="download-button">Analisar</button>
+          </form>
+          <p class="form-note" id="musicFormNote">Compatível com SoundCloud, Bandcamp, Audius, BandLab e links diretos de áudio.</p>
         </div>
 
         <div class="tool-panel" id="thumbnailToolPanel" role="tabpanel" aria-labelledby="thumbnailTab" hidden>
@@ -141,6 +161,7 @@
         <details><summary>Quais links posso usar?</summary><p>Links públicos das plataformas compatíveis e URLs diretas de mídia. Conteúdos privados, removidos ou restritos podem não estar disponíveis.</p></details>
         <details><summary>Preciso criar uma conta?</summary><p>Não. Basta colar um link público compatível, analisar a mídia e iniciar o download.</p></details>
         <details><summary>Como transformar um vídeo em MP3?</summary><p>Abra a opção Vídeo para MP3, cole o link público do vídeo e gere o arquivo de áudio.</p></details>
+        <details><summary>Como baixar músicas?</summary><p>Abra Músicas e cole um link público do SoundCloud, Bandcamp, Audius ou BandLab. A faixa será analisada e preparada para download.</p></details>
         <details><summary>Como baixar uma thumbnail?</summary><p>Abra Baixar Thumbnail e cole um link do YouTube, Twitch, Kick ou Dailymotion. Se a capa estiver disponível, ela será exibida para download.</p></details>
         <details><summary>O aplicativo está disponível na Google Play?</summary><p>Ainda não. A versão oficial para Android é disponibilizada diretamente por este site. Em dispositivos compatíveis, basta usar o botão Baixar aplicativo e seguir as instruções do Android para concluir a instalação.</p></details>
       </section>

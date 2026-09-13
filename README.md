@@ -4,7 +4,9 @@ Site público e independente para analisar links diretos de mídia e baixar cont
 
 ## Escopo inicial
 
-- Prévia e download de URLs públicas diretas de vídeo, imagem e áudio.
-- Extração sem conta para links públicos das plataformas compatíveis, incluindo Instagram, TikTok, YouTube, Facebook, SoundCloud, Bandcamp, Audius e BandLab, quando a plataforma disponibilizar uma mídia acessível.
+- Área **Mídias** para fotos e vídeos públicos compatíveis.
+- Área **Vídeo para MP3** para converter vídeos compatíveis em áudio MP3.
+- Área **Músicas** para SoundCloud, Bandcamp, Audius, BandLab e links diretos de áudio.
+- Área **Thumbnail** para capas de vídeos e streams compatíveis.
 - Interface estática, responsiva e sem anúncios.
 - Integrações sociais futuras somente via autorização oficial da conta.

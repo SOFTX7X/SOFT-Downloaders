@@ -6,8 +6,8 @@ body { margin:0; color:var(--ink); background:#fff; font-family:"DM Sans",sans-s
 .brand { color:var(--ink); display:flex; align-items:center; gap:8px; font:800 21px/1 "Manrope",sans-serif; text-decoration:none; letter-spacing:-.8px; }.brand img{width:29px;height:29px;object-fit:contain}.brand span{color:var(--violet)}
 nav { display:flex; gap:28px; } nav a { color:var(--muted); text-decoration:none; font-size:14px; font-weight:600; } nav a:hover{color:var(--ink)}
 .hero { max-width:920px; padding:110px 28px 96px; margin:auto; text-align:center; }.eyebrow { margin:0 0 14px; color:var(--violet); font-size:12px; font-weight:800; letter-spacing:1.1px; }
-.tool-tabs{width:max-content;max-width:100%;margin:0 auto 34px;padding:4px;display:grid;grid-template-columns:repeat(3,auto);gap:4px;border:1px solid var(--line);border-radius:11px;background:var(--surface)}
-.tool-tab{border:0;border-radius:7px;padding:10px 18px;background:transparent;color:var(--muted);font:800 13px "DM Sans",sans-serif;cursor:pointer;transition:background .16s ease,color .16s ease,box-shadow .16s ease}
+.tool-tabs{width:max-content;max-width:100%;margin:0 auto 34px;padding:4px;display:grid;grid-template-columns:repeat(4,auto);gap:4px;border:1px solid var(--line);border-radius:11px;background:var(--surface)}
+.tool-tab{border:0;border-radius:7px;padding:10px 18px;background:transparent;color:var(--muted);font:800 13px "DM Sans",sans-serif;white-space:nowrap;cursor:pointer;transition:background .16s ease,color .16s ease,box-shadow .16s ease}
 .tool-tab:hover{color:var(--ink)}
 .tool-tab.is-active{background:#fff;color:var(--violet);box-shadow:0 4px 12px rgba(23,33,42,.08)}
 .tool-tab:focus-visible{outline:3px solid rgba(116,68,255,.22);outline-offset:2px}
@@ -20,10 +20,10 @@ h1,h2 { margin:0; font-family:"Manrope",sans-serif; letter-spacing:-2.2px; } h1 
 @media (max-width:640px){
   .site-header{padding:0 20px;min-height:66px}.site-header nav{display:none}
   .hero{padding:58px 20px 54px}
-  .tool-tabs{width:100%;margin-bottom:28px;grid-template-columns:repeat(3,minmax(0,1fr))}
-  .tool-tab{padding:10px 6px;font-size:11px}
+  .tool-tabs{width:100%;margin-bottom:28px;padding:3px;grid-template-columns:repeat(4,minmax(0,1fr));gap:2px}
+  .tool-tab{min-width:0;padding:9px 2px;font-size:clamp(8.5px,2.55vw,10.5px);letter-spacing:-.2px;white-space:nowrap}
   .hero h1{white-space:nowrap;font-size:clamp(28px,8.1vw,34px);letter-spacing:-1.5px}
-  #mp3ToolPanel h1,#thumbnailToolPanel h1{font-size:clamp(27px,7.6vw,33px)}
+  #mp3ToolPanel h1,#musicToolPanel h1,#thumbnailToolPanel h1{font-size:clamp(27px,7.6vw,33px)}
   .hero-copy{margin-top:18px;margin-bottom:22px;font-size:16px}
   .media-types{margin-bottom:22px}
   .download-form{max-width:560px;padding:0;border:0;border-radius:0;box-shadow:none;background:transparent;grid-template-columns:minmax(0,1fr);gap:10px;position:relative}
